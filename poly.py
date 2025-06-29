@@ -300,6 +300,8 @@ def run_cli(stdscr):
     inp = ""
     suggestions = []
     sugg_idx = 0
+    polyrc_chars = read_polyrc()
+    polyrc_index = 0
     while True:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
@@ -333,7 +335,10 @@ def run_cli(stdscr):
         stdscr.move(h - 1, VERTICAL_COL + 4 + len(cwd_disp) + len(inp))
         stdscr.refresh()
         try:
-            ch = stdscr.get_wch()
+            if polyrc_index >= len(polyrc_chars):
+                ch = stdscr.get_wch()
+            else:
+                ch = polyrc_chars[polyrc_index]
         except curses.error:
             time.sleep(0.05)
             continue
@@ -443,16 +448,25 @@ def run_cli(stdscr):
             continue
         if isinstance(ch, str) and ch.isprintable():
             inp += ch
+            polyrc_index += 1
 
-
+def read_polyrc():
+    try:
+        chars = []
+        with open(os.path.expanduser("~/.polyrc"), "r") as rcfile:
+            for line in rcfile.readlines():
+                for char in list(line):
+                    chars.append(char)
+        return chars
+    except FileNotFoundError:
+        return []
 
 def main():
     try:
         curses.wrapper(run_cli)
+        print(read_polyrc())
     except KeyboardInterrupt:
         pass
-
-
 
 if __name__ == "__main__":
     main()
