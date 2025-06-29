@@ -42,6 +42,10 @@ class Tab:
             for line in text.splitlines():
                 self.buffer.append(line)
 
+    def clear(self):
+        with self.lock:
+            self.buffer = []
+
     def run_exec(self, program):
         
         def _worker(cmd, cwd):
@@ -319,7 +323,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "clear"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -560,6 +564,10 @@ def run_cli(stdscr):
                 except ValueError:
                     tabs[current].add("Usage: download <url> \"<filename>\"")
                 continue
+            if lc == "clear" and not rest:
+                tabs[current].clear()
+                continue
+
             tabs[current].add(f"Unknown: {cmd}")
             continue
         if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
