@@ -153,7 +153,7 @@ class Tab:
             try:
                 with urlopen(u, timeout=15) as resp, open(dest, 'wb') as out:
                     shutil.copyfileobj(resp, out)
-                self.add(f"Downloaded {u} → {dest}")
+                self.add(f"Downloaded {u} -> {dest}")
             except (HTTPError, URLError) as e:
                 self.add(f"download: network error: {e}")
             except Exception as e:
