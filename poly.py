@@ -23,7 +23,7 @@ class Tab:
     
     def __init__(self, name="New Tab"):
         self.name = name
-        self.mode = 'builtin'
+        self.mode = 'poly'
         self.cwd = os.getcwd()
         self.buffer = []
         self.lock = threading.Lock()
@@ -69,7 +69,7 @@ class Tab:
 
     def set_mode(self, mode):
         m = mode.lower()
-        if m not in ('builtin', 'win', 'pws', 'lnx'):
+        if m not in ('poly', 'win', 'pws', 'lnx'):
             self.add(f"Invalid mode: {mode}")
             return
         if self.shell_proc:
@@ -80,8 +80,8 @@ class Tab:
             except:
                 pass
             self.shell_proc = None
-        self.mode = 'builtin' if m == 'builtin' else m
-        if self.mode == 'builtin':
+        self.mode = 'poly' if m == 'poly' else m
+        if self.mode == 'poly':
             return
         if m == 'win':
             exe = os.environ.get('COMSPEC', 'cmd.exe')
@@ -97,7 +97,7 @@ class Tab:
             )
         except Exception as e:
             self.add(f"Failed to spawn shell '{exe}': {e}")
-            self.mode = 'builtin'
+            self.mode = 'poly'
             return
 
         def _reader(pipe):
@@ -111,8 +111,8 @@ class Tab:
 
         def _waiter():
             code = self.shell_proc.wait()
-            self.add(f"Shell exited (code {code}); reverting to builtin.")
-            self.mode = 'builtin'
+            self.add(f"Exited (code {code}); reverting to Poly.")
+            self.mode = 'poly'
             self.shell_proc = None
 
         threading.Thread(target=_waiter, daemon=True).start()
@@ -294,7 +294,7 @@ def run_cli(stdscr):
         draw_sidebar(stdscr, tabs, current)
         draw_messages(stdscr, tabs[current])
         mode = tabs[current].mode
-        if mode == 'builtin':
+        if mode == 'poly':
             new_sugs = get_completions(inp, tabs, current)
         else:
             new_sugs = []
@@ -359,7 +359,7 @@ def run_cli(stdscr):
         if ch in ("\n", "\r"):
             line = inp
             inp = ""
-            if mode != 'builtin':
+            if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
             if not line.strip():
