@@ -417,6 +417,7 @@ def run_cli(stdscr):
     sugg_idx = 0
     polyrc_chars = read_polyrc()
     polyrc_index = 0
+    reading_polyrc = True
     while True:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
@@ -451,6 +452,7 @@ def run_cli(stdscr):
         stdscr.refresh()
         try:
             if polyrc_index >= len(polyrc_chars):
+                reading_polyrc = False
                 ch = stdscr.get_wch()
             else:
                 ch = polyrc_chars[polyrc_index]
@@ -498,7 +500,8 @@ def run_cli(stdscr):
                 continue
             if not line.strip():
                 continue
-            tabs[current].add(f"> {line}")
+            if not reading_polyrc:
+                tabs[current].add(f"> {line}")
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
@@ -585,6 +588,18 @@ def run_cli(stdscr):
                     tabs[current].download(url, fname)
                 except ValueError:
                     tabs[current].add("Usage: download <url> \"<filename>\"")
+                continue
+            if lc == "shutdown" and not rest:
+                if os.name == "nt":
+                    subprocess.run(["shutdown", "/s", "/t", "0"])
+                else:
+                    subprocess.run(["shutdown", "now"])
+                continue
+            if lc == "reboot" and not rest:
+                if os.name == "nt":
+                    subprocess.run(["shutdown", "/r", "/t", "0"])
+                else:
+                    subprocess.run(["reboot"])
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
