@@ -125,6 +125,18 @@ class Tab:
             else:
                 self.add(f"remove: not a file: {p}")
 
+    def make(self, filename):
+            newfile = os.path.abspath(os.path.join(self.cwd, filename))
+            try:
+                if os.path.exists(newfile):
+                    self.add(f"make: file already exists: {newfile}")
+                    return
+                with open(newfile, 'w', encoding='utf-8'):
+                    pass
+                self.add(f"Created file: {newfile}")
+            except Exception as e:
+                self.add(f"make: error creating file '{filename}': {e}")
+
     def show_cwd(self):
         self.add(self.cwd)
 
@@ -284,7 +296,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -509,6 +521,9 @@ def run_cli(stdscr):
                 continue
             if lc == "echo" and rest:
                 tabs[current].add(rest)
+                continue
+            if lc == "make" and rest:
+                tabs[current].make(rest)
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
