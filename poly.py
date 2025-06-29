@@ -16,7 +16,6 @@ import subprocess
 
 
 
-
 VERTICAL_COL = 23
 
 
