@@ -65,6 +65,14 @@ class Tab:
         else:
             self.add(f"cd: no such directory: {path}")
 
+    def ls(self, path):
+        requested_dir = os.path.abspath(os.path.join(self.cwd, path))
+        if os.path.isdir(requested_dir):
+            for item in os.listdir(requested_dir):
+                self.add(item)
+        else:
+            self.add(f"ls: no such directory: {path}")
+
     def show_cwd(self):
         self.add(self.cwd)
 
@@ -230,8 +238,9 @@ def get_completions(inp, tabs, idx):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
-            dir_full = os.path.abspath(os.path.join(cwd, token_path))
+            dir_part = token_path
             prefix = ''
+            dir_full = os.path.abspath(os.path.join(cwd, dir_part))
         else:
             dir_part, prefix = os.path.split(token_path)
             dir_full = os.path.abspath(os.path.join(cwd, dir_part)) if dir_part else cwd
@@ -249,7 +258,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd"]
+        opts = ["tab", "run", "cd", "cwd", "ls"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -417,12 +426,17 @@ def run_cli(stdscr):
                 continue
             if lc == "cd" and rest:
                 tabs[current].cd(rest)
-                continue
             if lc == "cwd" and not rest:
                 tabs[current].show_cwd()
                 continue
             if lc == "run" and rest:
                 tabs[current].run_exec(rest)
+                continue
+            if lc == "ls":
+                if rest:
+                    tabs[current].ls(rest)
+                else:
+                    tabs[current].ls("")
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
