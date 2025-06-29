@@ -65,6 +65,7 @@ class Tab:
         self.mode = 'poly'
         self.cwd = os.getcwd()
         self.buffer = []
+        self.history = []
         self.lock = threading.Lock()
         self.shell_proc = None
         self.readers = []
@@ -227,6 +228,17 @@ class Tab:
     def show_cwd(self):
         self.add(self.cwd)
 
+
+
+    def show_history(self):
+        if not self.history:
+            self.add("No history available.")
+            return
+        for i, entry in enumerate(self.history):
+            self.add(f"{i + 1}: {entry}")
+
+
+
     def set_mode(self, mode):
         m = mode.lower()
         if m not in ('poly', 'win', 'pws', 'lnx'):
@@ -383,7 +395,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -533,6 +545,8 @@ def run_cli(stdscr):
             polyrc_index += 1
             line = inp
             inp = ""
+            if line.strip():
+                tabs[current].history.append(line)
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
@@ -605,6 +619,9 @@ def run_cli(stdscr):
                 continue
             if lc == "deldir" and rest:
                 tabs[current].deldir(rest)
+                continue
+            if lc == "history":
+                tabs[current].show_history()
                 continue
             if lc == "files":
                 if rest:
