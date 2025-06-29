@@ -589,6 +589,18 @@ def run_cli(stdscr):
                 except ValueError:
                     tabs[current].add("Usage: download <url> \"<filename>\"")
                 continue
+            if lc == "shutdown" and not rest:
+                if os.name == "nt":
+                    subprocess.run(["shutdown", "/s", "/t", "0"])
+                else:
+                    subprocess.run(["shutdown", "now"])
+                continue
+            if lc == "reboot" and not rest:
+                if os.name == "nt":
+                    subprocess.run(["shutdown", "/r", "/t", "0"])
+                else:
+                    subprocess.run(["reboot"])
+                continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
         if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
