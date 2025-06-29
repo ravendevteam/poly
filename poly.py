@@ -29,11 +29,18 @@ VERTICAL_COL = 23
 
 
 ALIASES = {}
+CUSTOM_COMMANDS = {}
 
 
 
 def define_alias(original, alias):
     ALIASES[original] = alias
+
+
+
+def define_command(name, function, arguments):
+    CUSTOM_COMMANDS[name] = function
+    CUSTOM_COMMANDS[f"__{name}_args"] = arguments
 
 
 
@@ -74,7 +81,11 @@ class Tab:
         self.shell_proc = None
         self.readers = []
         self.stdin_lock = threading.Lock()
-        app_context = {"main_window": self}
+        app_context = {
+            "tab": self,
+            "define_command": define_command,
+            "define_alias": define_alias
+        }
         self.plugins = load_plugins(app_context)
 
     def add(self, text):
@@ -451,6 +462,9 @@ def get_completions(inp, tabs, idx):
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
     commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color"]
+    for command in CUSTOM_COMMANDS.keys():
+        if not command.startswith("__"):
+            commands.append(command)
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -637,7 +651,9 @@ def run_cli(stdscr):
             lc = cmd.lower()
             if lc in ALIASES.keys():
                 lc = ALIASES[lc]
-                
+            if lc in CUSTOM_COMMANDS.keys():
+                CUSTOM_COMMANDS[lc](CUSTOM_COMMANDS[f"__{lc}_args"])
+                continue  
             if lc in ("exit", "quit"):
                 return
             if lc == "tab":
