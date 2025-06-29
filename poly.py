@@ -237,8 +237,9 @@ def get_completions(inp, tabs, idx):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
-            dir_full = os.path.abspath(os.path.join(cwd, token_path))
+            dir_part = token_path
             prefix = ''
+            dir_full = os.path.abspath(os.path.join(cwd, dir_part))
         else:
             dir_part, prefix = os.path.split(token_path)
             dir_full = os.path.abspath(os.path.join(cwd, dir_part)) if dir_part else cwd
