@@ -15,6 +15,8 @@ from tkinter import filedialog
 import subprocess
 
 
+
+
 VERTICAL_COL = 23
 
 
@@ -249,7 +251,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    if cmd in ('cd', 'run', 'mkdir'):
+    if cmd in ('cd', 'run'):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
