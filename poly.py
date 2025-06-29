@@ -74,42 +74,42 @@ class Tab:
             self.add(f"ls: no such directory: {path}")
 
 
-    def mkdir(self, path):
+    def makedir(self, path):
         newdir = os.path.abspath(os.path.join(self.cwd, path))
         try:
-            if os.path.exists(newdir) : # Deck if its alreadz a thing
-                self.add(f"mkdir: directory already exists: {newdir}")
+            if os.path.exists(newdir) :
+                self.add(f"makedir: directory already exists: {newdir}")
                 return
             os.mkdir(newdir)
             self.add(f"Created directory: {newdir}")
         except FileNotFoundError:
-            self.add(f"mkdir: cannot create directory: '{path}': No such file or directory")
+            self.add(f"makedir: cannot create directory: '{path}': No such file or directory")
         except PermissionError:
-            self.add(f"mkdir: permission denied: '{newdir}'")
+            self.add(f"makedir: permission denied: '{newdir}'")
         except OSError as e:
-            self.add(f"mkdir: error creating directory: '{newdir}': {e}")
+            self.add(f"makedir: error creating directory: '{newdir}': {e}")
         except Exception as e:
-            self.add(f"mkdir: error creating directory: '{newdir}': {e}")
+            self.add(f"makedir: error creating directory: '{newdir}': {e}")
     
-    def rmdir(self, path):
+    def deldir(self, path):
         trageted_dir = os.path.abspath(os.path.join(self.cwd, path))
         try:
             if not os.path.isdir(trageted_dir):
-                self.add(f"rmdir: no such directory: {trageted_dir}")
+                self.add(f"deldir: no such directory: {trageted_dir}")
                 return
             if os.listdir(trageted_dir):
-                self.add(f"rmdir: directory not empty: {trageted_dir}")
+                self.add(f"deldir: directory not empty: {trageted_dir}")
                 return
             os.rmdir(trageted_dir)
             self.add(f"Removed directory: {trageted_dir}")
         except FileNotFoundError:
-            self.add(f"rmdir: cannot remove directory: '{path}': No such file or directory")
+            self.add(f"deldir: cannot remove directory: '{path}': No such file or directory")
         except PermissionError:
-            self.add(f"rmdir: permission denied: '{trageted_dir}'")
+            self.add(f"deldir: permission denied: '{trageted_dir}'")
         except OSError as e:
-            self.add(f"rmdir: error removing directory: '{trageted_dir}': {e}")
+            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
         except Exception as e:
-            self.add(f"rmdir: error removing directory: '{trageted_dir}': {e}")
+            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -272,7 +272,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    if cmd in ('cd', 'run', 'rmdir'):
+    if cmd in ('cd', 'run', 'deldir'):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -296,7 +296,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "mkdir", "rmdir"]
+        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -470,11 +470,11 @@ def run_cli(stdscr):
             if lc == "run" and rest:
                 tabs[current].run_exec(rest)
                 continue
-            if lc == "mkdir" and rest:
-                tabs[current].mkdir(rest)
+            if lc == "makedir" and rest:
+                tabs[current].makedir(rest)
                 continue
-            if lc == "rmdir" and rest:
-                tabs[current].rmdir(rest)
+            if lc == "deldir" and rest:
+                tabs[current].deldir(rest)
                 continue
             if lc == "ls":
                 if rest:
