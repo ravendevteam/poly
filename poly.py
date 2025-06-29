@@ -67,13 +67,13 @@ class Tab:
         else:
             self.add(f"cd: no such directory: {path}")
 
-    def ls(self, path):
+    def files(self, path):
         requested_dir = os.path.abspath(os.path.join(self.cwd, path))
         if os.path.isdir(requested_dir):
             for item in os.listdir(requested_dir):
                 self.add(item)
         else:
-            self.add(f"ls: no such directory: {path}")
+            self.add(f"files: no such directory: {path}")
 
 
     def makedir(self, path):
@@ -310,7 +310,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir", "remove", "echo"]
+        opts = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -498,11 +498,11 @@ def run_cli(stdscr):
             if lc == "deldir" and rest:
                 tabs[current].deldir(rest)
                 continue
-            if lc == "ls":
+            if lc == "files":
                 if rest:
-                    tabs[current].ls(rest)
+                    tabs[current].files(rest)
                 else:
-                    tabs[current].ls("")
+                    tabs[current].files("")
                 continue
             if lc == "remove" and rest:
                 tabs[current].remove(rest)
