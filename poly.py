@@ -20,6 +20,7 @@ import urllib.request
 import urllib.parse
 import importlib.util
 import random
+import colorama
 
 
 
@@ -28,18 +29,11 @@ VERTICAL_COL = 23
 
 
 ALIASES = {}
-CUSTOM_COMMANDS = {}
 
 
 
 def define_alias(original, alias):
     ALIASES[original] = alias
-
-
-
-def define_command(name, function, arguments):
-    CUSTOM_COMMANDS[name] = function
-    CUSTOM_COMMANDS[f"__{name}_args"] = arguments
 
 
 
@@ -74,15 +68,13 @@ class Tab:
         self.cwd = os.getcwd()
         self.buffer = []
         self.history = []
+        self.color_settings = {}
+        self._next_color_pair = 3
         self.lock = threading.Lock()
         self.shell_proc = None
         self.readers = []
         self.stdin_lock = threading.Lock()
-        app_context = {
-            "tab": self,
-            "define_command": define_command,
-            "define_alias": define_alias
-        }
+        app_context = {"main_window": self}
         self.plugins = load_plugins(app_context)
 
     def add(self, text):
@@ -237,10 +229,49 @@ class Tab:
             walk(target)
         threading.Thread(target=_worker, args=(path,), daemon=True).start()
 
+    def color(self, thing, color_name):
+        import curses
+
+        valid_things = {
+            "borders", "logotext", "clock", "userinfo",
+            "currenttab", "tab", "prompt", "input", "output"
+        }
+        curses_color_map = {
+            "black":   curses.COLOR_BLACK,
+            "red":     curses.COLOR_RED,
+            "green":   curses.COLOR_GREEN,
+            "yellow":  curses.COLOR_YELLOW,
+            "blue":    curses.COLOR_BLUE,
+            "magenta": curses.COLOR_MAGENTA,
+            "cyan":    curses.COLOR_CYAN,
+            "white":   curses.COLOR_WHITE,
+        }
+        thing_lc = thing.lower()
+        col_norm = color_name.lower().replace(" ", "")
+
+        if thing_lc not in valid_things:
+            self.add(f"color: invalid target '{thing}'")
+            return
+        if col_norm.startswith("dark"):
+            base = col_norm[len("dark"):]
+            bold = curses.A_NORMAL
+        else:
+            base = col_norm
+            bold = curses.A_BOLD
+        if base not in curses_color_map:
+            self.add(f"color: invalid color '{color_name}'")
+            return
+        if not curses.has_colors():
+            self.add("color: terminal does not support colors")
+            return
+        pair_id = getattr(self, "_next_color_pair", 3)
+        curses.init_pair(pair_id, curses_color_map[base], -1)
+        self._next_color_pair = pair_id + 1
+        self.color_settings[thing_lc] = (pair_id, bold)
+        self.add(f"{thing_lc} color set to {col_norm}")
+
     def show_cwd(self):
         self.add(self.cwd)
-
-
 
     def show_history(self):
         if not self.history:
@@ -248,8 +279,6 @@ class Tab:
             return
         for i, entry in enumerate(self.history):
             self.add(f"{i + 1}: {entry}")
-
-
 
     def set_mode(self, mode):
         m = mode.lower()
@@ -328,25 +357,33 @@ class Tab:
 
 
 
-def draw_layout(stdscr):
+def draw_layout(stdscr, tab):
     h, w = stdscr.getmaxyx()
     left = "Poly"
+    pid, bold = tab.color_settings.get("logotext", (1, curses.A_BOLD))
+    stdscr.addstr(0, 0, left, curses.color_pair(pid) | bold)
     now = datetime.datetime.now().strftime("%H:%M:%S")
     center_x = (w - len(now)) // 2
+    pid, bold = tab.color_settings.get("clock", (1, curses.A_BOLD))
+    stdscr.addstr(0, max(center_x, len(left) + 1), now,
+                  curses.color_pair(pid) | bold)
     user_host = f"{getpass.getuser()}@{socket.gethostname()}"
     right_x = w - len(user_host)
-    stdscr.addstr(0, 0, left)
-    stdscr.addstr(0, max(center_x, len(left) + 1), now)
-    stdscr.addstr(0, max(right_x, len(left) + len(now) + 2), user_host)
+    pid, bold = tab.color_settings.get("userinfo", (1, curses.A_BOLD))
+    stdscr.addstr(0, max(right_x, len(left) + len(now) + 2), user_host,
+                  curses.color_pair(pid) | bold)
+    pid, bold = tab.color_settings.get("borders", (1, curses.A_NORMAL))
+    border_attr = curses.color_pair(pid) | bold
+
     if VERTICAL_COL < w:
-        stdscr.addstr(1, 0, "─" * VERTICAL_COL)
-        stdscr.addstr(1, VERTICAL_COL, "┬")
-        stdscr.addstr(1, VERTICAL_COL + 1, "─" * (w - VERTICAL_COL - 1))
+        stdscr.addstr(1, 0, "─" * VERTICAL_COL, border_attr)
+        stdscr.addstr(1, VERTICAL_COL, "┬",       border_attr)
+        stdscr.addstr(1, VERTICAL_COL + 1, "─" * (w - VERTICAL_COL - 1), border_attr)
     else:
-        stdscr.addstr(1, 0, "─" * w)
+        stdscr.addstr(1, 0, "─" * w, border_attr)
     for y in range(2, h):
         if VERTICAL_COL < w:
-            stdscr.addch(y, VERTICAL_COL, curses.ACS_VLINE)
+            stdscr.addch(y, VERTICAL_COL, curses.ACS_VLINE, border_attr)
 
 
 
@@ -359,7 +396,11 @@ def draw_sidebar(stdscr, tabs, current_idx):
             break
         title = tab.name
         disp = (title[:width - 3] + "...") if len(title) > width else title
-        attr = curses.A_REVERSE if i == current_idx else 0
+        if i == current_idx:
+            pid, bold = tab.color_settings.get("currenttab", (0, curses.A_REVERSE))
+        else:
+            pid, bold = tab.color_settings.get("tab", (1, curses.A_NORMAL))
+        attr = curses.color_pair(pid) | bold
         stdscr.addstr(row, 0, disp.ljust(width), attr)
 
 
@@ -369,10 +410,12 @@ def draw_messages(stdscr, tab):
     max_row = h - 2
     with tab.lock:
         msgs = tab.buffer[-(max_row - 2):]
+    pid, bold = tab.color_settings.get("output", (1, curses.A_NORMAL))
+    msg_attr = curses.color_pair(pid) | bold
     for i, line in enumerate(msgs):
         y = 2 + i
         if y < max_row:
-            stdscr.addnstr(y, VERTICAL_COL + 1, line, w - VERTICAL_COL - 1)
+            stdscr.addnstr(y, VERTICAL_COL + 1, line, w - VERTICAL_COL - 1, msg_attr)
 
 
 
@@ -407,10 +450,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history"]
-    for command in CUSTOM_COMMANDS.keys():
-        if not command.startswith("__"):
-            commands.append(command)
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -452,6 +492,24 @@ def get_completions(inp, tabs, idx):
             else:
                 return []
         return [base + o for o in opts if o.startswith(token)]
+    if parts[0].lower() == "color":
+        valid_things = [
+            "borders", "logotext", "clock", "userinfo",
+            "currenttab", "tab", "prompt", "input", "output"
+        ]
+        ansi_colors = [
+            "black", "darkred", "darkgreen", "darkyellow",
+            "darkblue", "darkmagenta", "darkcyan", "gray",
+            "darkgray", "red", "green", "yellow",
+            "blue", "magenta", "cyan", "white"
+        ]
+        if len(parts) == 1:
+            opts = valid_things
+        elif len(parts) == 2:
+            opts = ansi_colors
+        else:
+            return []
+        return [base + o for o in opts if o.startswith(token)]
     return []
 
 
@@ -486,7 +544,7 @@ def run_cli(stdscr):
     while True:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
-        draw_layout(stdscr)
+        draw_layout(stdscr, tabs[current])
         draw_sidebar(stdscr, tabs, current)
         draw_messages(stdscr, tabs[current])
         mode = tabs[current].mode
@@ -579,9 +637,7 @@ def run_cli(stdscr):
             lc = cmd.lower()
             if lc in ALIASES.keys():
                 lc = ALIASES[lc]
-            if lc in CUSTOM_COMMANDS.keys():
-                CUSTOM_COMMANDS[lc](CUSTOM_COMMANDS[f"__{lc}_args"])
-                continue  
+                
             if lc in ("exit", "quit"):
                 return
             if lc == "tab":
@@ -687,6 +743,18 @@ def run_cli(stdscr):
                     continue
                 dir_arg = parts[0] if parts else None
                 tabs[current].tree(dir_arg)
+                continue
+            if lc == "color":
+                try:
+                    parts = shlex.split(rest)
+                except ValueError:
+                    tabs[current].add('Usage: color <thingtocolor> <color>')
+                    continue
+                if len(parts) != 2:
+                    tabs[current].add('Usage: color <thingtocolor> <color>')
+                    continue
+                target, col = parts
+                tabs[current].color(target, col)
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
