@@ -195,6 +195,35 @@ class Tab:
                 self.add(f"download: error saving file: {e}")
         threading.Thread(target=_worker, args=(url, filename), daemon=True).start()
 
+    def tree(self, path=None):
+        def _worker(p):
+            import os
+            target = os.path.abspath(os.path.join(self.cwd, p)) if p else self.cwd
+            if not os.path.exists(target):
+                self.add(f"tree: no such directory: {p}")
+                return
+            if not os.path.isdir(target):
+                self.add(f"tree: not a directory: {p}")
+                return
+            root_label = p or "."
+            self.add(root_label)
+            def walk(dir_path, prefix=""):
+                try:
+                    entries = sorted(os.listdir(dir_path), key=lambda n: n.lower())
+                except PermissionError:
+                    self.add(f"{prefix}[Permission denied]")
+                    return
+                for idx, name in enumerate(entries):
+                    full = os.path.join(dir_path, name)
+                    is_last = (idx == len(entries) - 1)
+                    connector = "└── " if is_last else "├── "
+                    self.add(f"{prefix}{connector}{name}")
+                    if os.path.isdir(full):
+                        extension = "    " if is_last else "│   "
+                        walk(full, prefix + extension)
+            walk(target)
+        threading.Thread(target=_worker, args=(path,), daemon=True).start()
+
     def show_cwd(self):
         self.add(self.cwd)
 
@@ -354,7 +383,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -615,6 +644,15 @@ def run_cli(stdscr):
                 continue
             if lc == "alias" and rest:
                 define_alias(rest.split()[0], rest.split()[1])
+                continue
+            if lc == "tree":
+                try:
+                    parts = shlex.split(rest)
+                except ValueError:
+                    tabs[current].add('Usage: tree "<dir>"')
+                    continue
+                dir_arg = parts[0] if parts else None
+                tabs[current].tree(dir_arg)
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
