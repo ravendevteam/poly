@@ -111,6 +111,30 @@ class Tab:
         except Exception as e:
             self.add(f"rmdir: error removing directory: '{trageted_dir}': {e}")
 
+
+
+    def remove(self, path):
+        trageted_file = os.path.abspath(os.path.join(self.cwd, path))
+        try:
+            if os.path.isdir(trageted_file):
+                self.add(f"remove: cannot remove directory: '{trageted_file}': Use deldir instead")
+                return
+            if not os.path.exists(trageted_file):
+                self.add(f"remove: no such file: {trageted_file}")
+                return
+            os.remove(trageted_file)
+            self.add(f"Removed file: {trageted_file}")
+        except FileNotFoundError:
+            self.add(f"remove: cannot remove: '{trageted_file}': No such file or directory")
+        except PermissionError:
+            self.add(f"remove: permission denied: '{trageted_file}'")
+        except OSError as e:
+            self.add(f"remove: error removing file: '{trageted_file}': {e}")
+        except Exception as e:
+            self.add(f"remove: error removing file: '{trageted_file}': {e}")
+
+
+
     def show_cwd(self):
         self.add(self.cwd)
 
@@ -271,7 +295,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    if cmd in ('cd', 'run', 'rmdir'):
+    if cmd in ('cd', 'run', 'rmdir', 'remove'):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -295,7 +319,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "mkdir", "rmdir"]
+        opts = ["tab", "run", "cd", "cwd", "ls", "mkdir", "rmdir", "remove"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -474,6 +498,9 @@ def run_cli(stdscr):
                 continue
             if lc == "rmdir" and rest:
                 tabs[current].rmdir(rest)
+                continue
+            if lc == "remove" and rest:
+                tabs[current].remove(rest)
                 continue
             if lc == "ls":
                 if rest:
