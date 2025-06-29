@@ -92,6 +92,10 @@ class Tab:
         with self.lock:
             for line in text.splitlines():
                 self.buffer.append(line)
+    
+    def clear(self):
+        with self.lock:
+            self.buffer = []
 
     def run_exec(self, program):
         
@@ -771,6 +775,9 @@ def run_cli(stdscr):
                     continue
                 target, col = parts
                 tabs[current].color(target, col)
+                continue
+            if lc == "clear":
+                tabs[current].clear()
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
