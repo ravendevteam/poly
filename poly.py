@@ -89,8 +89,11 @@ class Tab:
         elif m == 'pws':
             exe = 'powershell.exe'
         elif m == 'lnx':
-            grab_shell = subprocess.run('tail -n 1 /opt/shells', capture_output=True, text=True, shell=True)
-            exe = 'bash' if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+            grab_shell = subprocess.run('tail -n 1 /etc/shells', capture_output=True, text=True, shell=True)
+            if "/bin" in grab_shell:
+                exe = grab_shell if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+            else:
+                exe = 'bash' if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
         try:
             self.shell_proc = subprocess.Popen(
                 exe, stdin=subprocess.PIPE,
