@@ -15,6 +15,9 @@ from tkinter import filedialog
 import subprocess
 import glob
 import shutil
+import shlex
+import urllib.request
+import urllib.parse
 
 
 
@@ -74,7 +77,6 @@ class Tab:
                 self.add(item)
         else:
             self.add(f"files: no such directory: {path}")
-
 
     def makedir(self, path):
         newdir = os.path.abspath(os.path.join(self.cwd, path))
@@ -136,6 +138,27 @@ class Tab:
                 self.add(f"Created file: {newfile}")
             except Exception as e:
                 self.add(f"make: error creating file '{filename}': {e}")
+
+    def download(self, url, filename=None):
+        def _worker(u, fn):
+            from urllib.request import urlopen
+            from urllib.error import URLError, HTTPError
+            import os, shutil
+            parsed = urllib.parse.urlparse(u)
+            if parsed.scheme not in ('http', 'https'):
+                self.add(f"download: unsupported URL scheme")
+                return
+            local_name = fn or os.path.basename(parsed.path) or 'download'
+            dest = os.path.abspath(os.path.join(self.cwd, local_name))
+            try:
+                with urlopen(u, timeout=15) as resp, open(dest, 'wb') as out:
+                    shutil.copyfileobj(resp, out)
+                self.add(f"Downloaded {u} → {dest}")
+            except (HTTPError, URLError) as e:
+                self.add(f"download: network error: {e}")
+            except Exception as e:
+                self.add(f"download: error saving file: {e}")
+        threading.Thread(target=_worker, args=(url, filename), daemon=True).start()
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -296,7 +319,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -527,6 +550,15 @@ def run_cli(stdscr):
                 continue
             if lc == "make" and rest:
                 tabs[current].make(rest)
+                continue
+            if lc == "download" and rest:
+                try:
+                    parts = shlex.split(rest)
+                    url = parts[0]
+                    fname = parts[1] if len(parts) > 1 else None
+                    tabs[current].download(url, fname)
+                except ValueError:
+                    tabs[current].add("Usage: download <url> \"<filename>\"")
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
