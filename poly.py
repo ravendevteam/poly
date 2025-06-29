@@ -245,9 +245,9 @@ def draw_messages(stdscr, tab):
     h, w = stdscr.getmaxyx()
     max_row = h - 2
     with tab.lock:
-        msgs = tab.buffer[-(max_row - 3):]
+        msgs = tab.buffer[-(max_row - 2):]
     for i, line in enumerate(msgs):
-        y = 3 + i
+        y = 2 + i
         if y < max_row:
             stdscr.addnstr(y, VERTICAL_COL + 1, line, w - VERTICAL_COL - 1)
 
