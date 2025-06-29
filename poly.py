@@ -90,8 +90,9 @@ class Tab:
             exe = 'powershell.exe'
         elif m == 'lnx':
             grab_shell = subprocess.run('tail -n 1 /etc/shells', capture_output=True, text=True, shell=True)
-            if "/bin" in grab_shell:
-                exe = grab_shell if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+            if os.path.exists(grab_shell.stdout):
+                if grab_shell.stdout in "/bin":
+                    exe = grab_shell if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
             else:
                 exe = 'bash' if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
         try:
