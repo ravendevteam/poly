@@ -18,10 +18,34 @@ import shutil
 import shlex
 import urllib.request
 import urllib.parse
+import importlib.util
 
 
 
 VERTICAL_COL = 23
+
+
+
+def load_plugins(app_context):
+    user_home = os.path.expanduser("~")
+    plugins_dir = os.path.join(user_home, "plplugins")
+    os.makedirs(plugins_dir, exist_ok=True)
+    loaded_plugins = []
+    for filename in os.listdir(plugins_dir):
+        if filename.endswith(".py") and not filename.startswith("_"):
+            plugin_path = os.path.join(plugins_dir, filename)
+            mod_name = os.path.splitext(filename)[0]
+            spec = importlib.util.spec_from_file_location(mod_name, plugin_path)
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+                if hasattr(module, "register_plugin"):
+                    module.register_plugin(app_context)
+                    loaded_plugins.append(mod_name)
+                    print(f"Plugin '{mod_name}' loaded successfully from {plugins_dir}")
+            except Exception as e:
+                print(f"Failed to load plugin '{filename}' from {plugins_dir}: {e}")
+    return loaded_plugins
 
 
 
@@ -36,15 +60,13 @@ class Tab:
         self.shell_proc = None
         self.readers = []
         self.stdin_lock = threading.Lock()
+        app_context = {"main_window": self}
+        self.plugins = load_plugins(app_context)
 
     def add(self, text):
         with self.lock:
             for line in text.splitlines():
                 self.buffer.append(line)
-
-    def clear(self):
-        with self.lock:
-            self.buffer = []
 
     def run_exec(self, program):
         
@@ -323,7 +345,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "clear"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -564,10 +586,6 @@ def run_cli(stdscr):
                 except ValueError:
                     tabs[current].add("Usage: download <url> \"<filename>\"")
                 continue
-            if lc == "clear" and not rest:
-                tabs[current].clear()
-                continue
-
             tabs[current].add(f"Unknown: {cmd}")
             continue
         if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
