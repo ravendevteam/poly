@@ -42,6 +42,10 @@ class Tab:
             for line in text.splitlines():
                 self.buffer.append(line)
 
+    def clear(self):
+        with self.lock:
+            self.buffer = []
+
     def run_exec(self, program):
         
         def _worker(cmd, cwd):
@@ -560,6 +564,10 @@ def run_cli(stdscr):
                 except ValueError:
                     tabs[current].add("Usage: download <url> \"<filename>\"")
                 continue
+            if lc == "clear" and not rest:
+                tabs[current].clear()
+                continue
+
             tabs[current].add(f"Unknown: {cmd}")
             continue
         if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
