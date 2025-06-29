@@ -29,6 +29,8 @@ VERTICAL_COL = 23
 ALIASES = {}
 CUSTOM_COMMANDS = {}
 
+
+
 def define_alias(original, alias):
     ALIASES[original] = alias
 
