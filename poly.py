@@ -15,7 +15,6 @@ from tkinter import filedialog
 import subprocess
 
 
-
 VERTICAL_COL = 23
 
 
@@ -72,6 +71,23 @@ class Tab:
                 self.add(item)
         else:
             self.add(f"ls: no such directory: {path}")
+
+
+    def mkdir(self, path):
+        newdir = os.path.abspath(os.path.join(self.cwd, path))
+        try:
+            if os.path.exists(newdir) : # Deck if its alreadz a thing
+                self.add(f"mkdir: directory already exists: {newdir}")
+                return
+            os.mkdir(newdir)
+            self.add(f"Created directory: {newdir}")
+        except FileNotFoundError:
+            self.add(f"mkdir: cannot create directory: '{path}': No such file or directory")
+        except PermissionError:
+            self.add(f"mkdir: permission denied: '{newdir}'")
+        except Exception as e:
+            self.add(f"mkdir: error creating directory: '{newdir}': {e}")
+            
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -233,7 +249,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    if cmd in ('cd', 'run'):
+    if cmd in ('cd', 'run', 'mkdir'):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -257,7 +273,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls"]
+        opts = ["tab", "run", "cd", "cwd", "ls", "mkdir"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -430,6 +446,9 @@ def run_cli(stdscr):
                 continue
             if lc == "run" and rest:
                 tabs[current].run_exec(rest)
+                continue
+            if lc == "mkdir" and rest:
+                tabs[current].mkdir(rest)
                 continue
             if lc == "ls":
                 if rest:
