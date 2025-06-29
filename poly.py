@@ -442,13 +442,16 @@ def run_cli(stdscr):
             continue
         if ch in ("\n", "\r"):
             polyrc_index += 1
-
             line = inp
             inp = ""
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
             if not line.strip():
+                continue
+            tabs[current].add(f"> {line}")
+            if mode != 'poly':
+                tabs[current].write_input(line)
                 continue
             if ' ' in line:
                 cmd, rest = line.split(' ', 1)
