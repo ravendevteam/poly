@@ -471,6 +471,7 @@ def run_cli(stdscr):
                 continue
             if lc == "cd" and rest:
                 tabs[current].cd(rest)
+                continue
             if lc == "cwd" and not rest:
                 tabs[current].show_cwd()
                 continue
