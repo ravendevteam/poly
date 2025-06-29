@@ -92,6 +92,10 @@ class Tab:
         with self.lock:
             for line in text.splitlines():
                 self.buffer.append(line)
+    
+    def clear(self):
+        with self.lock:
+            self.buffer = []
 
     def run_exec(self, program):
         
@@ -461,7 +465,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -771,6 +775,9 @@ def run_cli(stdscr):
                     continue
                 target, col = parts
                 tabs[current].color(target, col)
+                continue
+            if lc == "clear":
+                tabs[current].clear()
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
