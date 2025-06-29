@@ -277,8 +277,6 @@ def export_log(tab):
 
 
 def get_completions(inp, tabs, idx):
-    if not inp.strip():
-        return []
     cwd = tabs[idx].cwd
     i = inp.rfind(' ')
     if i == -1:
@@ -286,6 +284,9 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo"]
+    if not inp.strip():
+        return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
         sep = os.sep
         token_path = token
@@ -310,8 +311,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo"]
-        return [o for o in opts if o.startswith(token)]
+        return [o for o in commands if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
             opts = ["title", "mode", "create", "delete", "export"]
