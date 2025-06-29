@@ -394,6 +394,8 @@ def run_cli(stdscr):
             inp = ""
             continue
         if ch in ("\n", "\r"):
+            polyrc_index += 1
+
             line = inp
             inp = ""
             if mode != 'poly':
@@ -486,7 +488,6 @@ def read_polyrc():
 def main():
     try:
         curses.wrapper(run_cli)
-        print(read_polyrc())
     except KeyboardInterrupt:
         pass
 
