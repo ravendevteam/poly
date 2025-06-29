@@ -310,7 +310,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir", "remove"]
+        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir", "remove", "echo"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -506,6 +506,9 @@ def run_cli(stdscr):
                 continue
             if lc == "remove" and rest:
                 tabs[current].remove(rest)
+                continue
+            if lc == "echo" and rest:
+                tabs[current].add(rest)
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
