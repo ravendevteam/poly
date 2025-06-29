@@ -528,6 +528,9 @@ def get_completions(inp, tabs, idx):
         else:
             return []
         return [base + o for o in opts if o.startswith(token)]
+    if parts[0].lower() == "alias":
+        opts = commands
+        return [base + o for o in opts if o.startswith(token)]
     return []
 
 
