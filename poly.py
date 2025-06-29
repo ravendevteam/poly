@@ -113,14 +113,11 @@ class Tab:
     def remove(self, path):
         trageted_file = os.path.abspath(os.path.join(self.cwd, path))
         try:
-            if os.path.isdir(trageted_file):
-                self.add(f"remove: cannot remove directory: '{trageted_file}': Use deldir instead")
-                return
             if not os.path.exists(trageted_file):
                 self.add(f"remove: no such file: {trageted_file}")
                 return
             os.remove(trageted_file)
-            self.add(f"Removed file: {trageted_file}")
+            self.add(f"Removed: {trageted_file}")
         except FileNotFoundError:
             self.add(f"remove: cannot remove: '{trageted_file}': No such file or directory")
         except PermissionError:
