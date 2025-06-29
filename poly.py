@@ -13,10 +13,39 @@ import curses
 import tkinter as tk
 from tkinter import filedialog
 import subprocess
+import glob
+import shutil
+import shlex
+import urllib.request
+import urllib.parse
+import importlib.util
 
 
 
 VERTICAL_COL = 23
+
+
+
+def load_plugins(app_context):
+    user_home = os.path.expanduser("~")
+    plugins_dir = os.path.join(user_home, "plplugins")
+    os.makedirs(plugins_dir, exist_ok=True)
+    loaded_plugins = []
+    for filename in os.listdir(plugins_dir):
+        if filename.endswith(".py") and not filename.startswith("_"):
+            plugin_path = os.path.join(plugins_dir, filename)
+            mod_name = os.path.splitext(filename)[0]
+            spec = importlib.util.spec_from_file_location(mod_name, plugin_path)
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+                if hasattr(module, "register_plugin"):
+                    module.register_plugin(app_context)
+                    loaded_plugins.append(mod_name)
+                    print(f"Plugin '{mod_name}' loaded successfully from {plugins_dir}")
+            except Exception as e:
+                print(f"Failed to load plugin '{filename}' from {plugins_dir}: {e}")
+    return loaded_plugins
 
 
 
@@ -31,6 +60,8 @@ class Tab:
         self.shell_proc = None
         self.readers = []
         self.stdin_lock = threading.Lock()
+        app_context = {"main_window": self}
+        self.plugins = load_plugins(app_context)
 
     def add(self, text):
         with self.lock:
@@ -65,14 +96,14 @@ class Tab:
         else:
             self.add(f"cd: no such directory: {path}")
 
-    def ls(self, path):
+    def files(self, path):
         requested_dir = os.path.abspath(os.path.join(self.cwd, path))
         if os.path.isdir(requested_dir):
             for item in os.listdir(requested_dir):
                 self.add(item)
         else:
-            self.add(f"ls: no such directory: {path}")
-            
+            self.add(f"files: no such directory: {path}")
+
     def makedir(self, path):
         newdir = os.path.abspath(os.path.join(self.cwd, path))
         try:
@@ -90,42 +121,70 @@ class Tab:
         except Exception as e:
             self.add(f"makedir: error creating directory: '{newdir}': {e}")
     
-    def deldir(self, path):
-        trageted_dir = os.path.abspath(os.path.join(self.cwd, path))
-        try:
-            if not os.path.isdir(trageted_dir):
-                self.add(f"deldir: no such directory: {trageted_dir}")
-                return
-            if os.listdir(trageted_dir):
-                self.add(f"deldir: directory not empty: {trageted_dir}")
-                return
-            os.rmdir(trageted_dir)
-            self.add(f"Removed directory: {trageted_dir}")
-        except FileNotFoundError:
-            self.add(f"deldir: cannot remove directory: '{path}': No such file or directory")
-        except PermissionError:
-            self.add(f"deldir: permission denied: '{trageted_dir}'")
-        except OSError as e:
-            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
-        except Exception as e:
-            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
+    def deldir(self, pattern):
+        glob_path = os.path.join(self.cwd, pattern)
+        matches = glob.glob(glob_path)
+        if not matches:
+            self.add(f"deldir: no matches for: {pattern}")
+            return
+        for p in matches:
+            if os.path.isdir(p):
+                try:
+                    shutil.rmtree(p)
+                    self.add(f"Removed directory: {p}")
+                except Exception as e:
+                    self.add(f"deldir: error removing '{p}': {e}")
+            else:
+                self.add(f"deldir: not a directory: {p}")
 
-    def remove(self, path):
-        trageted_file = os.path.abspath(os.path.join(self.cwd, path))
-        try:
-            if not os.path.exists(trageted_file):
-                self.add(f"remove: no such file: {trageted_file}")
+    def remove(self, pattern):
+        glob_path = os.path.join(self.cwd, pattern)
+        matches = glob.glob(glob_path)
+        if not matches:
+            self.add(f"remove: no matches for: {pattern}")
+            return
+        for p in matches:
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                    self.add(f"Removed file: {p}")
+                except Exception as e:
+                    self.add(f"remove: error removing '{p}': {e}")
+            else:
+                self.add(f"remove: not a file: {p}")
+
+    def make(self, filename):
+            newfile = os.path.abspath(os.path.join(self.cwd, filename))
+            try:
+                if os.path.exists(newfile):
+                    self.add(f"make: file already exists: {newfile}")
+                    return
+                with open(newfile, 'w', encoding='utf-8'):
+                    pass
+                self.add(f"Created file: {newfile}")
+            except Exception as e:
+                self.add(f"make: error creating file '{filename}': {e}")
+
+    def download(self, url, filename=None):
+        def _worker(u, fn):
+            from urllib.request import urlopen
+            from urllib.error import URLError, HTTPError
+            import os, shutil
+            parsed = urllib.parse.urlparse(u)
+            if parsed.scheme not in ('http', 'https'):
+                self.add(f"download: unsupported URL scheme")
                 return
-            os.remove(trageted_file)
-            self.add(f"Removed: {trageted_file}")
-        except FileNotFoundError:
-            self.add(f"remove: cannot remove: '{trageted_file}': No such file or directory")
-        except PermissionError:
-            self.add(f"remove: permission denied: '{trageted_file}'")
-        except OSError as e:
-            self.add(f"remove: error removing file: '{trageted_file}': {e}")
-        except Exception as e:
-            self.add(f"remove: error removing file: '{trageted_file}': {e}")
+            local_name = fn or os.path.basename(parsed.path) or 'download'
+            dest = os.path.abspath(os.path.join(self.cwd, local_name))
+            try:
+                with urlopen(u, timeout=15) as resp, open(dest, 'wb') as out:
+                    shutil.copyfileobj(resp, out)
+                self.add(f"Downloaded {u} -> {dest}")
+            except (HTTPError, URLError) as e:
+                self.add(f"download: network error: {e}")
+            except Exception as e:
+                self.add(f"download: error saving file: {e}")
+        threading.Thread(target=_worker, args=(url, filename), daemon=True).start()
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -247,9 +306,9 @@ def draw_messages(stdscr, tab):
     h, w = stdscr.getmaxyx()
     max_row = h - 2
     with tab.lock:
-        msgs = tab.buffer[-(max_row - 3):]
+        msgs = tab.buffer[-(max_row - 2):]
     for i, line in enumerate(msgs):
-        y = 3 + i
+        y = 2 + i
         if y < max_row:
             stdscr.addnstr(y, VERTICAL_COL + 1, line, w - VERTICAL_COL - 1)
 
@@ -279,8 +338,6 @@ def export_log(tab):
 
 
 def get_completions(inp, tabs, idx):
-    if not inp.strip():
-        return []
     cwd = tabs[idx].cwd
     i = inp.rfind(' ')
     if i == -1:
@@ -288,6 +345,9 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download"]
+    if not inp.strip():
+        return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
         sep = os.sep
         token_path = token
@@ -312,8 +372,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir", "remove"]
-        return [o for o in opts if o.startswith(token)]
+        return [o for o in commands if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
             opts = ["title", "mode", "create", "delete", "export"]
@@ -432,13 +491,16 @@ def run_cli(stdscr):
             continue
         if ch in ("\n", "\r"):
             polyrc_index += 1
-
             line = inp
             inp = ""
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
             if not line.strip():
+                continue
+            tabs[current].add(f"> {line}")
+            if mode != 'poly':
+                tabs[current].write_input(line)
                 continue
             if ' ' in line:
                 cmd, rest = line.split(' ', 1)
@@ -487,6 +549,7 @@ def run_cli(stdscr):
                 continue
             if lc == "cd" and rest:
                 tabs[current].cd(rest)
+                continue
             if lc == "cwd" and not rest:
                 tabs[current].show_cwd()
                 continue
@@ -499,14 +562,29 @@ def run_cli(stdscr):
             if lc == "deldir" and rest:
                 tabs[current].deldir(rest)
                 continue
+            if lc == "files":
+                if rest:
+                    tabs[current].files(rest)
+                else:
+                    tabs[current].files("")
+                continue
             if lc == "remove" and rest:
                 tabs[current].remove(rest)
                 continue
-            if lc == "ls":
-                if rest:
-                    tabs[current].ls(rest)
-                else:
-                    tabs[current].ls("")
+            if lc == "echo" and rest:
+                tabs[current].add(rest)
+                continue
+            if lc == "make" and rest:
+                tabs[current].make(rest)
+                continue
+            if lc == "download" and rest:
+                try:
+                    parts = shlex.split(rest)
+                    url = parts[0]
+                    fname = parts[1] if len(parts) > 1 else None
+                    tabs[current].download(url, fname)
+                except ValueError:
+                    tabs[current].add("Usage: download <url> \"<filename>\"")
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
