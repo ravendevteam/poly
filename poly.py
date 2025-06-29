@@ -26,6 +26,15 @@ VERTICAL_COL = 23
 
 
 
+ALIASES = {}
+
+
+
+def define_alias(original, alias):
+    ALIASES[original] = alias
+
+
+
 def load_plugins(app_context):
     user_home = os.path.expanduser("~")
     plugins_dir = os.path.join(user_home, "plplugins")
@@ -510,6 +519,9 @@ def run_cli(stdscr):
             else:
                 cmd, rest = line, ''
             lc = cmd.lower()
+            if lc in ALIASES.keys():
+                lc = ALIASES[lc]
+                
             if lc in ("exit", "quit"):
                 return
             if lc == "tab":
@@ -600,6 +612,9 @@ def run_cli(stdscr):
                     subprocess.run(["shutdown", "/r", "/t", "0"])
                 else:
                     subprocess.run(["reboot"])
+                continue
+            if lc == "alias" and rest:
+                define_alias(rest.split()[0], rest.split()[1])
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
