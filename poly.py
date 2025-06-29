@@ -72,8 +72,7 @@ class Tab:
                 self.add(item)
         else:
             self.add(f"ls: no such directory: {path}")
-
-
+            
     def makedir(self, path):
         newdir = os.path.abspath(os.path.join(self.cwd, path))
         try:
@@ -111,8 +110,6 @@ class Tab:
         except Exception as e:
             self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
 
-
-
     def remove(self, path):
         trageted_file = os.path.abspath(os.path.join(self.cwd, path))
         try:
@@ -132,8 +129,6 @@ class Tab:
             self.add(f"remove: error removing file: '{trageted_file}': {e}")
         except Exception as e:
             self.add(f"remove: error removing file: '{trageted_file}': {e}")
-
-
 
     def show_cwd(self):
         self.add(self.cwd)
