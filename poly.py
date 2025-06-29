@@ -505,6 +505,7 @@ def read_polyrc():
             for line in rcfile.readlines():
                 for char in list(line):
                     chars.append(char)
+        chars.append("\n")
         return chars
     except FileNotFoundError:
         return []
