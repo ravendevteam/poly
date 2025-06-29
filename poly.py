@@ -26,6 +26,15 @@ VERTICAL_COL = 23
 
 
 
+ALIASES = {}
+
+
+
+def define_alias(original, alias):
+    ALIASES[original] = alias
+
+
+
 def load_plugins(app_context):
     user_home = os.path.expanduser("~")
     plugins_dir = os.path.join(user_home, "plplugins")
@@ -186,6 +195,35 @@ class Tab:
             except Exception as e:
                 self.add(f"download: error saving file: {e}")
         threading.Thread(target=_worker, args=(url, filename), daemon=True).start()
+
+    def tree(self, path=None):
+        def _worker(p):
+            import os
+            target = os.path.abspath(os.path.join(self.cwd, p)) if p else self.cwd
+            if not os.path.exists(target):
+                self.add(f"tree: no such directory: {p}")
+                return
+            if not os.path.isdir(target):
+                self.add(f"tree: not a directory: {p}")
+                return
+            root_label = p or "."
+            self.add(root_label)
+            def walk(dir_path, prefix=""):
+                try:
+                    entries = sorted(os.listdir(dir_path), key=lambda n: n.lower())
+                except PermissionError:
+                    self.add(f"{prefix}[Permission denied]")
+                    return
+                for idx, name in enumerate(entries):
+                    full = os.path.join(dir_path, name)
+                    is_last = (idx == len(entries) - 1)
+                    connector = "└── " if is_last else "├── "
+                    self.add(f"{prefix}{connector}{name}")
+                    if os.path.isdir(full):
+                        extension = "    " if is_last else "│   "
+                        walk(full, prefix + extension)
+            walk(target)
+        threading.Thread(target=_worker, args=(path,), daemon=True).start()
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -357,7 +395,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "history"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history"]
     if not inp.strip():
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove'):
@@ -429,6 +467,7 @@ def run_cli(stdscr):
     sugg_idx = 0
     polyrc_chars = read_polyrc()
     polyrc_index = 0
+    reading_polyrc = True
     while True:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
@@ -463,6 +502,7 @@ def run_cli(stdscr):
         stdscr.refresh()
         try:
             if polyrc_index >= len(polyrc_chars):
+                reading_polyrc = False
                 ch = stdscr.get_wch()
             else:
                 ch = polyrc_chars[polyrc_index]
@@ -512,7 +552,8 @@ def run_cli(stdscr):
                 continue
             if not line.strip():
                 continue
-            tabs[current].add(f"> {line}")
+            if not reading_polyrc:
+                tabs[current].add(f"> {line}")
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
@@ -521,6 +562,9 @@ def run_cli(stdscr):
             else:
                 cmd, rest = line, ''
             lc = cmd.lower()
+            if lc in ALIASES.keys():
+                lc = ALIASES[lc]
+                
             if lc in ("exit", "quit"):
                 return
             if lc == "tab":
@@ -602,6 +646,30 @@ def run_cli(stdscr):
                     tabs[current].download(url, fname)
                 except ValueError:
                     tabs[current].add("Usage: download <url> \"<filename>\"")
+                continue
+            if lc == "shutdown" and not rest:
+                if os.name == "nt":
+                    subprocess.run(["shutdown", "/s", "/t", "0"])
+                else:
+                    subprocess.run(["shutdown", "now"])
+                continue
+            if lc == "reboot" and not rest:
+                if os.name == "nt":
+                    subprocess.run(["shutdown", "/r", "/t", "0"])
+                else:
+                    subprocess.run(["reboot"])
+                continue
+            if lc == "alias" and rest:
+                define_alias(rest.split()[0], rest.split()[1])
+                continue
+            if lc == "tree":
+                try:
+                    parts = shlex.split(rest)
+                except ValueError:
+                    tabs[current].add('Usage: tree "<dir>"')
+                    continue
+                dir_arg = parts[0] if parts else None
+                tabs[current].tree(dir_arg)
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
