@@ -12,6 +12,7 @@ import socket
 import curses
 import tkinter as tk
 from tkinter import filedialog
+import subprocess
 
 
 
@@ -95,8 +96,12 @@ class Tab:
             exe = os.environ.get('COMSPEC', 'cmd.exe')
         elif m == 'pws':
             exe = 'powershell.exe'
-        else:
-            exe = 'bash' if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+        elif m == 'lnx':
+            grab_shell = subprocess.run('tail -n 1 /etc/shells', capture_output=True, text=True, shell=True)
+            if "/bin" in grab_shell:
+                exe = grab_shell if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+            else:
+                exe = 'bash' if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
         try:
             self.shell_proc = subprocess.Popen(
                 exe, stdin=subprocess.PIPE,
