@@ -13,6 +13,8 @@ import curses
 import tkinter as tk
 from tkinter import filedialog
 import subprocess
+import glob
+import shutil
 
 
 
@@ -91,25 +93,37 @@ class Tab:
         except Exception as e:
             self.add(f"makedir: error creating directory: '{newdir}': {e}")
     
-    def deldir(self, path):
-        trageted_dir = os.path.abspath(os.path.join(self.cwd, path))
-        try:
-            if not os.path.isdir(trageted_dir):
-                self.add(f"deldir: no such directory: {trageted_dir}")
-                return
-            if os.listdir(trageted_dir):
-                self.add(f"deldir: directory not empty: {trageted_dir}")
-                return
-            os.rmdir(trageted_dir)
-            self.add(f"Removed directory: {trageted_dir}")
-        except FileNotFoundError:
-            self.add(f"deldir: cannot remove directory: '{path}': No such file or directory")
-        except PermissionError:
-            self.add(f"deldir: permission denied: '{trageted_dir}'")
-        except OSError as e:
-            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
-        except Exception as e:
-            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
+    def deldir(self, pattern):
+        glob_path = os.path.join(self.cwd, pattern)
+        matches = glob.glob(glob_path)
+        if not matches:
+            self.add(f"deldir: no matches for: {pattern}")
+            return
+        for p in matches:
+            if os.path.isdir(p):
+                try:
+                    shutil.rmtree(p)
+                    self.add(f"Removed directory: {p}")
+                except Exception as e:
+                    self.add(f"deldir: error removing '{p}': {e}")
+            else:
+                self.add(f"deldir: not a directory: {p}")
+
+    def remove(self, pattern):
+        glob_path = os.path.join(self.cwd, pattern)
+        matches = glob.glob(glob_path)
+        if not matches:
+            self.add(f"remove: no matches for: {pattern}")
+            return
+        for p in matches:
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                    self.add(f"Removed file: {p}")
+                except Exception as e:
+                    self.add(f"remove: error removing '{p}': {e}")
+            else:
+                self.add(f"remove: not a file: {p}")
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -272,7 +286,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    if cmd in ('cd', 'run', 'deldir'):
+    if cmd in ('cd', 'run', 'deldir', 'remove'):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -296,7 +310,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir"]
+        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir", "remove"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -471,7 +485,6 @@ def run_cli(stdscr):
                 continue
             if lc == "cd" and rest:
                 tabs[current].cd(rest)
-                continue
             if lc == "cwd" and not rest:
                 tabs[current].show_cwd()
                 continue
@@ -489,6 +502,9 @@ def run_cli(stdscr):
                     tabs[current].ls(rest)
                 else:
                     tabs[current].ls("")
+                continue
+            if lc == "remove" and rest:
+                tabs[current].remove(rest)
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
