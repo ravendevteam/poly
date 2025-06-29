@@ -74,42 +74,42 @@ class Tab:
             self.add(f"ls: no such directory: {path}")
 
 
-    def mkdir(self, path):
+    def makedir(self, path):
         newdir = os.path.abspath(os.path.join(self.cwd, path))
         try:
-            if os.path.exists(newdir) : # Deck if its alreadz a thing
-                self.add(f"mkdir: directory already exists: {newdir}")
+            if os.path.exists(newdir) :
+                self.add(f"makedir: directory already exists: {newdir}")
                 return
             os.mkdir(newdir)
             self.add(f"Created directory: {newdir}")
         except FileNotFoundError:
-            self.add(f"mkdir: cannot create directory: '{path}': No such file or directory")
+            self.add(f"makedir: cannot create directory: '{path}': No such file or directory")
         except PermissionError:
-            self.add(f"mkdir: permission denied: '{newdir}'")
+            self.add(f"makedir: permission denied: '{newdir}'")
         except OSError as e:
-            self.add(f"mkdir: error creating directory: '{newdir}': {e}")
+            self.add(f"makedir: error creating directory: '{newdir}': {e}")
         except Exception as e:
-            self.add(f"mkdir: error creating directory: '{newdir}': {e}")
+            self.add(f"makedir: error creating directory: '{newdir}': {e}")
     
-    def rmdir(self, path):
+    def deldir(self, path):
         trageted_dir = os.path.abspath(os.path.join(self.cwd, path))
         try:
             if not os.path.isdir(trageted_dir):
-                self.add(f"rmdir: no such directory: {trageted_dir}")
+                self.add(f"deldir: no such directory: {trageted_dir}")
                 return
             if os.listdir(trageted_dir):
-                self.add(f"rmdir: directory not empty: {trageted_dir}")
+                self.add(f"deldir: directory not empty: {trageted_dir}")
                 return
             os.rmdir(trageted_dir)
             self.add(f"Removed directory: {trageted_dir}")
         except FileNotFoundError:
-            self.add(f"rmdir: cannot remove directory: '{path}': No such file or directory")
+            self.add(f"deldir: cannot remove directory: '{path}': No such file or directory")
         except PermissionError:
-            self.add(f"rmdir: permission denied: '{trageted_dir}'")
+            self.add(f"deldir: permission denied: '{trageted_dir}'")
         except OSError as e:
-            self.add(f"rmdir: error removing directory: '{trageted_dir}': {e}")
+            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
         except Exception as e:
-            self.add(f"rmdir: error removing directory: '{trageted_dir}': {e}")
+            self.add(f"deldir: error removing directory: '{trageted_dir}': {e}")
 
 
 
@@ -160,8 +160,9 @@ class Tab:
             exe = 'powershell.exe'
         elif m == 'lnx':
             grab_shell = subprocess.run('tail -n 1 /etc/shells', capture_output=True, text=True, shell=True)
-            if "/bin" in grab_shell:
-                exe = grab_shell if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+            if os.path.exists(grab_shell.stdout):
+                if grab_shell.stdout in "/bin":
+                    exe = grab_shell if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
             else:
                 exe = 'bash' if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
         try:
@@ -295,7 +296,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    if cmd in ('cd', 'run', 'rmdir', 'remove'):
+    if cmd in ('cd', 'run', 'deldir', 'remove'):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -319,7 +320,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "mkdir", "rmdir", "remove"]
+        opts = ["tab", "run", "cd", "cwd", "ls", "makedir", "deldir", "remove"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -363,6 +364,8 @@ def run_cli(stdscr):
     inp = ""
     suggestions = []
     sugg_idx = 0
+    polyrc_chars = read_polyrc()
+    polyrc_index = 0
     while True:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
@@ -396,7 +399,10 @@ def run_cli(stdscr):
         stdscr.move(h - 1, VERTICAL_COL + 4 + len(cwd_disp) + len(inp))
         stdscr.refresh()
         try:
-            ch = stdscr.get_wch()
+            if polyrc_index >= len(polyrc_chars):
+                ch = stdscr.get_wch()
+            else:
+                ch = polyrc_chars[polyrc_index]
         except curses.error:
             time.sleep(0.05)
             continue
@@ -433,6 +439,8 @@ def run_cli(stdscr):
             inp = ""
             continue
         if ch in ("\n", "\r"):
+            polyrc_index += 1
+
             line = inp
             inp = ""
             if mode != 'poly':
@@ -493,11 +501,11 @@ def run_cli(stdscr):
             if lc == "run" and rest:
                 tabs[current].run_exec(rest)
                 continue
-            if lc == "mkdir" and rest:
-                tabs[current].mkdir(rest)
+            if lc == "makedir" and rest:
+                tabs[current].makedir(rest)
                 continue
-            if lc == "rmdir" and rest:
-                tabs[current].rmdir(rest)
+            if lc == "deldir" and rest:
+                tabs[current].deldir(rest)
                 continue
             if lc == "remove" and rest:
                 tabs[current].remove(rest)
@@ -515,8 +523,19 @@ def run_cli(stdscr):
             continue
         if isinstance(ch, str) and ch.isprintable():
             inp += ch
+            polyrc_index += 1
 
-
+def read_polyrc():
+    try:
+        chars = []
+        with open(os.path.expanduser("~/.polyrc"), "r") as rcfile:
+            for line in rcfile.readlines():
+                for char in list(line):
+                    chars.append(char)
+        chars.append("\n")
+        return chars
+    except FileNotFoundError:
+        return []
 
 def main():
     try:
