@@ -86,9 +86,30 @@ class Tab:
             self.add(f"mkdir: cannot create directory: '{path}': No such file or directory")
         except PermissionError:
             self.add(f"mkdir: permission denied: '{newdir}'")
+        except OSError as e:
+            self.add(f"mkdir: error creating directory: '{newdir}': {e}")
         except Exception as e:
             self.add(f"mkdir: error creating directory: '{newdir}': {e}")
-            
+    
+    def rmdir(self, path):
+        trageted_dir = os.path.abspath(os.path.join(self.cwd, path))
+        try:
+            if not os.path.isdir(trageted_dir):
+                self.add(f"rmdir: no such directory: {trageted_dir}")
+                return
+            if os.listdir(trageted_dir):
+                self.add(f"rmdir: directory not empty: {trageted_dir}")
+                return
+            os.rmdir(trageted_dir)
+            self.add(f"Removed directory: {trageted_dir}")
+        except FileNotFoundError:
+            self.add(f"rmdir: cannot remove directory: '{path}': No such file or directory")
+        except PermissionError:
+            self.add(f"rmdir: permission denied: '{trageted_dir}'")
+        except OSError as e:
+            self.add(f"rmdir: error removing directory: '{trageted_dir}': {e}")
+        except Exception as e:
+            self.add(f"rmdir: error removing directory: '{trageted_dir}': {e}")
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -251,7 +272,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    if cmd in ('cd', 'run'):
+    if cmd in ('cd', 'run', 'rmdir'):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -275,7 +296,7 @@ def get_completions(inp, tabs, idx):
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        opts = ["tab", "run", "cd", "cwd", "ls", "mkdir"]
+        opts = ["tab", "run", "cd", "cwd", "ls", "mkdir", "rmdir"]
         return [o for o in opts if o.startswith(token)]
     if parts[0].lower() == "tab":
         if len(parts) == 1:
@@ -458,6 +479,9 @@ def run_cli(stdscr):
                 continue
             if lc == "mkdir" and rest:
                 tabs[current].mkdir(rest)
+                continue
+            if lc == "rmdir" and rest:
+                tabs[current].rmdir(rest)
                 continue
             if lc == "ls":
                 if rest:
