@@ -246,7 +246,6 @@ class Tab:
 
     def color(self, thing, color_name):
         import curses
-
         valid_things = {
             "borders", "logotext", "clock", "userinfo",
             "currenttab", "tab", "prompt", "input", "output"
@@ -263,7 +262,6 @@ class Tab:
         }
         thing_lc = thing.lower()
         col_norm = color_name.lower().replace(" ", "")
-
         if thing_lc not in valid_things:
             self.add(f"color: invalid target '{thing}'")
             return
@@ -284,6 +282,48 @@ class Tab:
         self._next_color_pair = pair_id + 1
         self.color_settings[thing_lc] = (pair_id, bold)
         self.add(f"{thing_lc} color set to {col_norm}")
+
+    def read(self, path):
+        file_path = os.path.abspath(os.path.join(self.cwd, path))
+        if not os.path.exists(file_path):
+            self.add(f"read: no such file: {path}")
+            return
+        if os.path.isdir(file_path):
+            self.add(f"read: '{path}' is a directory")
+            return
+        try:
+            with open(file_path, 'rb') as f:
+                sample = f.read(4096)
+                is_text = (b'\x00' not in sample)
+                f.seek(0)
+
+                if is_text:
+                    with open(file_path, 'r', encoding='latin-1', errors='replace') as tf:
+                        for line in tf:
+                            self.add(line.rstrip('\n'))
+                else:
+                    offset = 0
+                    while True:
+                        chunk = f.read(16)
+                        if not chunk:
+                            break
+                        hex_bytes = [f"{b:02x}" for b in chunk]
+                        first8 = hex_bytes[:8]
+                        last8  = hex_bytes[8:]
+                        hex_col = ' '.join(first8)
+                        if last8:
+                            hex_col += '  ' + ' '.join(last8)
+                        hex_col = hex_col.ljust(48)
+                        ascii_col = ''.join(
+                            chr(b) if 32 <= b <= 126 else '.'
+                            for b in chunk
+                        )
+                        self.add(f"{offset:08x}  {hex_col}  {ascii_col}")
+                        offset += len(chunk)
+        except PermissionError:
+            self.add(f"read: permission denied: '{path}'")
+        except Exception as e:
+            self.add(f"read: error reading '{path}': {e}")
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -465,13 +505,13 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
     if not inp.strip():
         return commands
-    if cmd in ('cd', 'run', 'deldir', 'remove'):
+    if cmd in ('cd', 'run', 'deldir', 'remove', "read"):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -781,6 +821,9 @@ def run_cli(stdscr):
                 continue
             if lc == "clear":
                 tabs[current].clear()
+                continue
+            if lc == "read" and rest:
+                tabs[current].read(rest)
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
