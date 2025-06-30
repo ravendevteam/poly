@@ -326,6 +326,19 @@ class Tab:
         except Exception as e:
             self.add(f"read: error reading '{path}': {e}")
 
+    def move(self, source, destination):
+        src = os.path.abspath(os.path.join(self.cwd, source))
+        dst = os.path.abspath(os.path.join(self.cwd, destination))
+        try:
+            shutil.move(src, dst)
+            self.add(f"Moved '{src}' -> '{dst}'")
+        except FileNotFoundError:
+            self.add(f"move: file not found: '{source}'")
+        except PermissionError:
+            self.add(f"move: permission denied: '{source}' or '{destination}'")
+        except Exception as e:
+            self.add(f"move: error moving '{source}' to '{destination}': {e}")
+
     def show_cwd(self):
         self.add(self.cwd)
 
@@ -511,13 +524,13 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
     if not inp.strip():
         return commands
-    if cmd in ('cd', 'run', 'deldir', 'remove', "read"):
+    if cmd in ('cd', 'run', 'deldir', 'remove', "read", "move"):
         sep = os.sep
         token_path = token
         if token_path.endswith(sep):
@@ -852,6 +865,15 @@ def run_cli(stdscr):
                 continue
             if lc == "read" and rest:
                 tabs[current].read(rest)
+                continue
+            if lc == "move" and rest:
+                try:
+                    parts = shlex.split(rest)
+                    if len(parts) != 2:
+                        raise ValueError
+                    tabs[current].move(parts[0], parts[1])
+                except ValueError:
+                    tabs[current].add("Usage: move <source> <destination>")
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
