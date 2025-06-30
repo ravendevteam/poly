@@ -35,3 +35,4 @@ To compile from source, make sure you have Python 3.12.4, and Nuitka. Install th
 - [lilafian](https://github.com/lilafian)
 - [swordmasterliam](https://github.com/swordmasterliam)
 - [rhhen122](https://github.com/rhhen122)
+- [mre31](https://github.com/mre31)
