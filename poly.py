@@ -727,7 +727,7 @@ def run_cli(stdscr):
             if lc in ALIASES.keys():
                 lc = ALIASES[lc]
             if lc in CUSTOM_COMMANDS.keys():
-                CUSTOM_COMMANDS[lc](CUSTOM_COMMANDS[f"__{lc}_args"])
+                CUSTOM_COMMANDS[lc](CUSTOM_COMMANDS[f"__{lc}_args"], rest)
                 continue  
             if lc in ("exit", "quit"):
                 return
