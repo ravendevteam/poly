@@ -44,6 +44,16 @@ def define_command(name, function, arguments):
 
 
 
+def load_icon(icon_name):
+    icon_path = os.path.join(os.path.dirname(__file__), icon_name)
+    if getattr(sys, 'frozen', False):
+        icon_path = os.path.join(sys._MEIPASS, icon_name)
+    if os.path.exists(icon_path):
+        return QIcon(icon_path)
+    return None
+
+
+
 def load_plugins(app_context):
     user_home = os.path.expanduser("~")
     plugins_dir = os.path.join(user_home, "plplugins")
@@ -355,7 +365,7 @@ class Tab:
         except Exception as e:
             self.add(f"copy: error copying '{source}' to '{destination}': {e}")
 
-    def stop(self, process_name):
+    def kill(self, process_name):
         try:
             result = subprocess.run(
                 ["taskkill", "/F", "/IM", process_name],
@@ -365,9 +375,9 @@ class Tab:
             output = (result.stdout or "") + (result.stderr or "")
             self.add(output.strip() or f"No output from taskkill for '{process_name}'")
         except FileNotFoundError:
-            self.add("stop: 'taskkill' not found on system")
+            self.add("kill: system command not found on system")
         except Exception as e:
-            self.add(f"stop: error terminating '{process_name}': {e}")
+            self.add(f"kill: error terminating '{process_name}': {e}")
 
     def show_cwd(self):
         self.add(self.cwd)
@@ -444,6 +454,15 @@ class Tab:
                 self.shell_proc.stdin.flush()
             except Exception as e:
                 self.add(f"Error writing to shell stdin: {e}")
+
+    def stop(self):
+        if self.shell_proc and self.shell_proc.poll() is None:
+            try:
+                self.shell_proc.terminate()
+                self.shell_proc.wait(1)
+            except:
+                pass
+        self.shell_proc = None
 
 
 
@@ -545,7 +564,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "stop"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -905,14 +924,14 @@ def run_cli(stdscr):
                 except ValueError:
                     tabs[current].add("Usage: copy <source> <destination>")
                 continue
-            if lc == "stop" and rest:
+            if lc == "kill" and rest:
                 try:
                     parts = shlex.split(rest)
                     if len(parts) != 1:
                         raise ValueError
-                    tabs[current].stop(parts[0])
+                    tabs[current].kill(parts[0])
                 except ValueError:
-                    tabs[current].add("Usage: stop <processname>")
+                    tabs[current].add("Usage: kill <processname>")
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
