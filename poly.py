@@ -709,13 +709,13 @@ def run_cli(stdscr):
             inp = ""
             if line.strip():
                 tabs[current].history.append(line)
+            if not reading_polyrc:
+                tabs[current].add(f"> {line}")
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
             if not line.strip():
                 continue
-            if not reading_polyrc:
-                tabs[current].add(f"> {line}")
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
