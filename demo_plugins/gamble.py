@@ -45,7 +45,7 @@ win_text = """
 Good job! You won!
 """
 
-def run_gambling(args):
+def run_gambling(args, rest):
     tab = args[0]
 
     num1 = random.randrange(0, 3)
