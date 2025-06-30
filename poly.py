@@ -56,8 +56,7 @@ def load_icon(icon_name):
 
 def load_plugins(app_context):
     user_home = os.path.expanduser("~")
-    # plugins_dir = os.path.join(user_home, "plplugins")
-    plugins_dir = "demo_plugins"
+    plugins_dir = os.path.join(user_home, "plplugins")
     os.makedirs(plugins_dir, exist_ok=True)
     loaded_plugins = []
     for filename in os.listdir(plugins_dir):
