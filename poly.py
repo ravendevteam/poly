@@ -581,6 +581,7 @@ def run_cli(stdscr):
     curses.cbreak()
     stdscr.keypad(True)
     stdscr.nodelay(True)
+    curses.mousemask(curses.ALL_MOUSE_EVENTS)
     if curses.has_colors():
         curses.start_color()
         curses.use_default_colors()
@@ -642,6 +643,29 @@ def run_cli(stdscr):
                 ch = polyrc_chars[polyrc_index]
         except curses.error:
             time.sleep(0.05)
+            continue
+        if ch == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+            except Exception:
+                continue
+            tab = tabs[current]
+            max_scroll = max(len(tab.buffer) - (h - 4), 0)
+            if bstate & curses.BUTTON4_PRESSED:
+                tab.scroll = min(tab.scroll + 1, max_scroll)
+            elif bstate & curses.BUTTON5_PRESSED:
+                tab.scroll = max(tab.scroll - 1, 0)
+            continue
+
+        if ch == curses.KEY_PPAGE:
+            tab = tabs[current]
+            max_scroll = max(len(tab.buffer) - (h - 4), 0)
+            tab.scroll = min(tab.scroll + (h - 4), max_scroll)
+            continue
+
+        if ch == curses.KEY_NPAGE:
+            tab = tabs[current]
+            tab.scroll = max(tab.scroll - (h - 4), 0)
             continue
         if ch == curses.KEY_RESIZE:
             continue
