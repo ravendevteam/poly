@@ -68,13 +68,14 @@ def load_plugins(app_context):
 
 
 class Tab:
-    
+
     def __init__(self, name="New Tab"):
         self.name = name
         self.mode = 'poly'
         self.cwd = os.getcwd()
         self.buffer = []
         self.history = []
+        self.scroll = 0
         self.color_settings = {}
         self._next_color_pair = 3
         self.lock = threading.Lock()
@@ -463,14 +464,18 @@ def draw_sidebar(stdscr, tabs, current_idx):
 def draw_messages(stdscr, tab):
     h, w = stdscr.getmaxyx()
     max_row = h - 2
+    available = max_row - 2
     with tab.lock:
-        msgs = tab.buffer[-(max_row - 2):]
+        length = len(tab.buffer)
+        offset = min(max(tab.scroll, 0), max(length - available, 0))
+        start = max(length - available - offset, 0)
+        msgs = tab.buffer[start:start + available]
     pid, bold = tab.color_settings.get("output", (1, curses.A_NORMAL))
-    msg_attr = curses.color_pair(pid) | bold
+    attr = curses.color_pair(pid) | bold
     for i, line in enumerate(msgs):
         y = 2 + i
         if y < max_row:
-            stdscr.addnstr(y, VERTICAL_COL + 1, line, w - VERTICAL_COL - 1, msg_attr)
+            stdscr.addnstr(y, VERTICAL_COL + 1, line, w - VERTICAL_COL - 1, attr)
 
 
 
@@ -485,6 +490,7 @@ def export_log(tab):
     curses.cbreak()
     curses.noecho()
     stdscr.keypad(True)
+    curses.mousemask(curses.ALL_MOUSE_EVENTS)
     if not path:
         tab.add("Export cancelled.")
         return
@@ -656,13 +662,11 @@ def run_cli(stdscr):
             elif bstate & curses.BUTTON5_PRESSED:
                 tab.scroll = max(tab.scroll - 1, 0)
             continue
-
         if ch == curses.KEY_PPAGE:
             tab = tabs[current]
             max_scroll = max(len(tab.buffer) - (h - 4), 0)
             tab.scroll = min(tab.scroll + (h - 4), max_scroll)
             continue
-
         if ch == curses.KEY_NPAGE:
             tab = tabs[current]
             tab.scroll = max(tab.scroll - (h - 4), 0)
