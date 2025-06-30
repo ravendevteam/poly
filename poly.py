@@ -56,7 +56,8 @@ def load_icon(icon_name):
 
 def load_plugins(app_context):
     user_home = os.path.expanduser("~")
-    plugins_dir = os.path.join(user_home, "plplugins")
+    # plugins_dir = os.path.join(user_home, "plplugins")
+    plugins_dir = "demo_plugins"
     os.makedirs(plugins_dir, exist_ok=True)
     loaded_plugins = []
     for filename in os.listdir(plugins_dir):
@@ -662,12 +663,21 @@ def run_cli(stdscr):
     polyrc_chars = read_polyrc()
     polyrc_index = 0
     reading_polyrc = True
+    cursor_visible = True
+    last_toggle_time = time.time()
+    toggle_interval = 0.5    
     while True:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
         draw_layout(stdscr, tabs[current])
         draw_sidebar(stdscr, tabs, current)
         draw_messages(stdscr, tabs[current])
+        now = time.time()
+        if now - last_toggle_time >= toggle_interval:
+            cursor_visible = not cursor_visible
+            curses.curs_set(1 if cursor_visible else 0)
+            last_toggle_time = now
+
         mode = tabs[current].mode
         if mode == 'poly':
             new_sugs = get_completions(inp, tabs, current)
