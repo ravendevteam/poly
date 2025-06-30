@@ -21,6 +21,7 @@ import urllib.parse
 import importlib.util
 import random
 import colorama
+import re
 
 
 
@@ -427,9 +428,13 @@ class Tab:
             self.mode = 'poly'
             return
 
+        ansi_escape_pattern = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
         def _reader(pipe):
             for line in pipe:
-                self.add(line.rstrip('\n'))
+                clean_line = ansi_escape_pattern.sub('', line).rstrip('\n')
+                if clean_line:
+                    self.add(clean_line)
 
         for p in (self.shell_proc.stdout, self.shell_proc.stderr):
             t = threading.Thread(target=_reader, args=(p,), daemon=True)
@@ -765,7 +770,11 @@ def run_cli(stdscr):
             if not reading_polyrc:
                 tabs[current].add(f"> {line}")
             if mode != 'poly':
-                tabs[current].write_input(line)
+                cmd_to_run = line.strip().lower()
+                if cmd_to_run in ('cls', 'clear', 'clear-host'):
+                    tabs[current].clear()
+                else:
+                    tabs[current].write_input(line)
                 continue
             if not line.strip():
                 continue
