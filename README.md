@@ -12,7 +12,7 @@ Made for Windows 11 and Linux.
 ## Installation
 You can download Poly [here](https://ravendevteam.org/software/poly).
 
-To compile from source, make sure you have Python 3.12.4, and Nuitka. Install the necessary dependencies from `requirements.txt`, then run `build.bat`.
+To compile from source, make sure you have Python >=3.12.4 and Nuitka. Install the necessary dependencies from `requirements.txt`, then run the `build.bat` or `build.sh` script based on your platform.
 
 ## Features & Usage
 - **.polyrc:** Create a .polyrc file in your home directory to define initial commands to execute.
