@@ -355,6 +355,20 @@ class Tab:
         except Exception as e:
             self.add(f"copy: error copying '{source}' to '{destination}': {e}")
 
+    def stop(self, process_name):
+        try:
+            result = subprocess.run(
+                ["taskkill", "/F", "/IM", process_name],
+                capture_output=True,
+                text=True
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            self.add(output.strip() or f"No output from taskkill for '{process_name}'")
+        except FileNotFoundError:
+            self.add("stop: 'taskkill' not found on system")
+        except Exception as e:
+            self.add(f"stop: error terminating '{process_name}': {e}")
+
     def show_cwd(self):
         self.add(self.cwd)
 
@@ -430,15 +444,6 @@ class Tab:
                 self.shell_proc.stdin.flush()
             except Exception as e:
                 self.add(f"Error writing to shell stdin: {e}")
-
-    def stop(self):
-        if self.shell_proc and self.shell_proc.poll() is None:
-            try:
-                self.shell_proc.terminate()
-                self.shell_proc.wait(1)
-            except:
-                pass
-        self.shell_proc = None
 
 
 
@@ -540,7 +545,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "stop"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -899,6 +904,15 @@ def run_cli(stdscr):
                     tabs[current].copy(parts[0], parts[1])
                 except ValueError:
                     tabs[current].add("Usage: copy <source> <destination>")
+                continue
+            if lc == "stop" and rest:
+                try:
+                    parts = shlex.split(rest)
+                    if len(parts) != 1:
+                        raise ValueError
+                    tabs[current].stop(parts[0])
+                except ValueError:
+                    tabs[current].add("Usage: stop <processname>")
                 continue
             tabs[current].add(f"Unknown: {cmd}")
             continue
