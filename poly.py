@@ -1020,10 +1020,8 @@ def run_cli(stdscr):
                 current, should_exit, *script_chars_exists = handle_single_command(cmd_line, tabs, current)
                 if script_chars_exists:
                     script_chars = script_chars_exists[0]
-                else:
-                    script_chars = []
 
-                if script_chars != []:
+                if script_chars_exists and script_chars != []:
                     reading_script = True
                     script_index = 0
 
