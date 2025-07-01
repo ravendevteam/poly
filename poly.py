@@ -624,7 +624,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable", "shutdown", "restart"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -818,7 +818,7 @@ def handle_single_command(cmd_line, tabs, current):
         else:
             subprocess.run(["shutdown", "now"])
         return current, False
-    if lc == "reboot" and not rest:
+    if lc == "restart" and not rest:
         if os.name == "nt":
             subprocess.run(["shutdown", "/r", "/t", "0"])
         else:
