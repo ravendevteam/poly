@@ -768,8 +768,12 @@ def handle_single_command(cmd_line, tabs, current):
         tabs[current].show_cwd()
         return current, False
     if lc == "run" and rest:
-        tabs[current].run_exec(rest)
-        return current, False
+        script_chars = []
+        if rest.strip().endswith(".poly"):
+            script_chars = read_poly_script(rest)
+        else:
+            tabs[current].run_exec(rest)
+        return current, False, script_chars
     if lc == "makedir" and rest:
         tabs[current].makedir(rest)
         return current, False
@@ -905,9 +909,9 @@ def run_cli(stdscr):
     inp = ""
     suggestions = []
     sugg_idx = 0
-    polyrc_chars = read_polyrc()
-    polyrc_index = 0
-    reading_polyrc = True
+    script_chars = read_polyrc()
+    script_index = 0
+    reading_script = True
     while True:
         h, w = stdscr.getmaxyx()
         width = w - (VERTICAL_COL + 1)
@@ -942,11 +946,11 @@ def run_cli(stdscr):
         stdscr.move(h - 1, VERTICAL_COL + 4 + len(cwd_disp) + len(inp))
         stdscr.refresh()
         try:
-            if polyrc_index >= len(polyrc_chars):
-                reading_polyrc = False
+            if script_index >= len(script_chars):
+                reading_script = False
                 ch = stdscr.get_wch()
             else:
-                ch = polyrc_chars[polyrc_index]
+                ch = script_chars[script_index]
         except curses.error:
             time.sleep(0.05)
             continue
@@ -1004,16 +1008,25 @@ def run_cli(stdscr):
             inp = ""
             continue
         if ch in ("\n", "\r"):
-            polyrc_index += 1
+            script_index += 1
             line = inp
             inp = ""
             if line.strip():
                 tabs[current].history.append(line)
-            if not reading_polyrc:
+            if not reading_script:
                 tabs[current].add(f"> {line}")
             commands = [c.strip() for c in line.split('&&') if c.strip()]
             for cmd_line in commands:
-                current, should_exit = handle_single_command(cmd_line, tabs, current)
+                current, should_exit, *script_chars_exists = handle_single_command(cmd_line, tabs, current)
+                if script_chars_exists:
+                    script_chars = script_chars_exists[0]
+                else:
+                    script_chars = []
+
+                if script_chars != []:
+                    reading_script = True
+                    script_index = 0
+
                 if should_exit:
                     return
             continue
@@ -1022,13 +1035,18 @@ def run_cli(stdscr):
             continue
         if isinstance(ch, str) and ch.isprintable():
             inp += ch
-            polyrc_index += 1
+            script_index += 1
 
 def read_polyrc():
+    return read_poly_script("~/.polyrc")
+
+def read_poly_script(path):
     try:
         chars = []
-        with open(os.path.expanduser("~/.polyrc"), "r") as rcfile:
-            for line in rcfile.readlines():
+        with open(os.path.expanduser(path), "r") as scriptfile:
+            for line in scriptfile.readlines():
+                if line.startswith("#") or line == "\n" or line == "":
+                    continue
                 for char in list(line):
                     chars.append(char)
         chars.append("\n")
