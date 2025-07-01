@@ -686,6 +686,195 @@ def get_completions(inp, tabs, idx):
         return [base + o for o in opts if o.startswith(token)]
     return []
 
+def handle_single_command(cmd_line, tabs, current):
+    line = expand_variables(cmd_line, tabs[current])
+    mode = tabs[current].mode
+    if mode != 'poly':
+        run = line.strip().lower()
+        if run in ('cls', 'clear', 'clear-host'):
+            tabs[current].clear()
+        else:
+            tabs[current].write_input(line)
+        return current, False
+    if not line.strip():
+        return current, False
+    if ' ' in line:
+        cmd, rest = line.split(' ', 1)
+    else:
+        cmd, rest = line, ''
+    lc = cmd.lower()
+    if lc == "variable":
+        if rest:
+            parts = rest.split(' ', 1)
+            name = parts[0]
+            value = parts[1] if len(parts) > 1 else ''
+            if not re.match(r'^[A-Za-z0-9_-]+$', name):
+                tabs[current].add(f"Invalid variable name: {name}")
+            else:
+                variables[name] = value
+                tabs[current].add(f"Variable '{name}' set to '{value}'")
+        else:
+            tabs[current].add("Usage: variable <name> <value>")
+        return current, False
+    if lc in ALIASES.keys():
+        lc = ALIASES[lc]
+    if lc in CUSTOM_COMMANDS.keys():
+        CUSTOM_COMMANDS[lc](CUSTOM_COMMANDS[f"__{lc}_args"], rest)
+        return current, False
+    if lc in ("exit", "quit"):
+        return current, True
+    if lc == "tab":
+        if not rest:
+            tabs[current].add("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
+        else:
+            parts = rest.split(' ', 1)
+            sub = parts[0].lower()
+            arg = parts[1] if len(parts) > 1 else ''
+            if sub == "title" and arg:
+                tabs[current].name = arg
+            elif sub == "mode" and arg:
+                tabs[current].set_mode(arg)
+            elif sub == "create":
+                title = arg if arg else "New Tab"
+                tabs.append(Tab(title))
+                current = len(tabs) - 1
+            elif sub == "delete" and arg:
+                idxs = [i for i, t in enumerate(tabs) if t.name == arg]
+                if not idxs:
+                    tabs[current].add(f"No tabs named '{arg}'")
+                else:
+                    for i in reversed(idxs):
+                        tabs[i].stop()
+                        del tabs[i]
+                    if not tabs:
+                        return current, True
+                    current = min(current, len(tabs) - 1)
+            elif sub == "export":
+                if arg:
+                    found = next((t for t in tabs if t.name == arg), None)
+                    if not found:
+                        tabs[current].add(f"No tabs named '{arg}")
+                    else:
+                        export_log(found)
+                else:
+                    export_log(tabs[current])
+            else:
+                tabs[current].add("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
+        return current, False
+    if lc == "cd" and rest:
+        tabs[current].cd(rest)
+        return current, False
+    if lc == "cwd" and not rest:
+        tabs[current].show_cwd()
+        return current, False
+    if lc == "run" and rest:
+        tabs[current].run_exec(rest)
+        return current, False
+    if lc == "makedir" and rest:
+        tabs[current].makedir(rest)
+        return current, False
+    if lc == "deldir" and rest:
+        tabs[current].deldir(rest)
+        return current, False
+    if lc == "history":
+        tabs[current].show_history()
+        return current, False
+    if lc == "files":
+        if rest:
+            tabs[current].files(rest)
+        else:
+            tabs[current].files("")
+        return current, False
+    if lc == "remove" and rest:
+        tabs[current].remove(rest)
+        return current, False
+    if lc == "echo" and rest:
+        tabs[current].add(rest)
+        return current, False
+    if lc == "make" and rest:
+        tabs[current].make(rest)
+        return current, False
+    if lc == "download" and rest:
+        try:
+            parts = shlex.split(rest)
+            url = parts[0]
+            fname = parts[1] if len(parts) > 1 else None
+            tabs[current].download(url, fname)
+        except ValueError:
+            tabs[current].add("Usage: download <url> \"<filename>\"")
+        return current, False
+    if lc == "shutdown" and not rest:
+        if os.name == "nt":
+            subprocess.run(["shutdown", "/s", "/t", "0"])
+        else:
+            subprocess.run(["shutdown", "now"])
+        return current, False
+    if lc == "reboot" and not rest:
+        if os.name == "nt":
+            subprocess.run(["shutdown", "/r", "/t", "0"])
+        else:
+            subprocess.run(["reboot"])
+        return current, False
+    if lc == "alias" and rest:
+        define_alias(rest.split()[0], rest.split()[1])
+        return current, False
+    if lc == "tree":
+        try:
+            parts = shlex.split(rest)
+        except ValueError:
+            tabs[current].add('Usage: tree "<dir>"')
+            return current, False
+        dir_arg = parts[0] if parts else None
+        tabs[current].tree(dir_arg)
+        return current, False
+    if lc == "color":
+        try:
+            parts = shlex.split(rest)
+        except ValueError:
+            tabs[current].add('Usage: color <thingtocolor> <color>')
+            return current, False
+        if len(parts) != 2:
+            tabs[current].add('Usage: color <thingtocolor> <color>')
+            return current, False
+        target, col = parts
+        tabs[current].color(target, col)
+        return current, False
+    if lc == "clear":
+        tabs[current].clear()
+        return current, False
+    if lc == "read" and rest:
+        tabs[current].read(rest)
+        return current, False
+    if lc == "move" and rest:
+        try:
+            parts = shlex.split(rest)
+            if len(parts) != 2:
+                raise ValueError
+            tabs[current].move(parts[0], parts[1])
+        except ValueError:
+            tabs[current].add("Usage: move <source> <destination>")
+        return current, False
+    if lc == "copy" and rest:
+        try:
+            parts = shlex.split(rest)
+            if len(parts) != 2:
+                raise ValueError
+            tabs[current].copy(parts[0], parts[1])
+        except ValueError:
+            tabs[current].add("Usage: copy <source> <destination>")
+        return current, False
+    if lc == "kill" and rest:
+        try:
+            parts = shlex.split(rest)
+            if len(parts) != 1:
+                raise ValueError
+            tabs[current].kill(parts[0])
+        except ValueError:
+            tabs[current].add("Usage: kill <processname>")
+        return current, False
+    tabs[current].add(f"Unknown: {cmd}")
+    return current, False
+
 
 
 def run_cli(stdscr):
@@ -819,194 +1008,11 @@ def run_cli(stdscr):
                 tabs[current].history.append(line)
             if not reading_polyrc:
                 tabs[current].add(f"> {line}")
-            if mode != 'poly':
-                cmd_to_run = line.strip().lower()
-                if cmd_to_run in ('cls', 'clear', 'clear-host'):
-                    tabs[current].clear()
-                else:
-                    tabs[current].write_input(line)
-                continue
-            if not line.strip():
-                continue
-            line = expand_variables(line, tabs[current])
-            if mode != 'poly':
-                tabs[current].write_input(line)
-                continue
-            if ' ' in line:
-                cmd, rest = line.split(' ', 1)
-            else:
-                cmd, rest = line, ''
-            lc = cmd.lower()
-            if lc == "variable":
-                if rest:
-                    parts = rest.split(' ', 1)
-                    name = parts[0]
-                    value = parts[1] if len(parts) > 1 else ''
-                    if not re.match(r'^[A-Za-z0-9_-]+$', name):
-                        tabs[current].add(f"Invalid variable name: {name}")
-                    else:
-                        variables[name] = value
-                        tabs[current].add(f"Variable '{name}' set to '{value}'")
-                else:
-                    tabs[current].add("Usage: variable <name> <value>")
-                continue
-            if lc in ALIASES.keys():
-                lc = ALIASES[lc]
-            if lc in CUSTOM_COMMANDS.keys():
-                CUSTOM_COMMANDS[lc](CUSTOM_COMMANDS[f"__{lc}_args"], rest)
-                continue  
-            if lc in ("exit", "quit"):
-                return
-            if lc == "tab":
-                if not rest:
-                    tabs[current].add("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
-                else:
-                    parts = rest.split(' ', 1)
-                    sub = parts[0].lower()
-                    arg = parts[1] if len(parts) > 1 else ''
-                    if sub == "title" and arg:
-                        tabs[current].name = arg
-                    elif sub == "mode" and arg:
-                        tabs[current].set_mode(arg)
-                    elif sub == "create":
-                        title = arg if arg else "New Tab"
-                        tabs.append(Tab(title))
-                        current = len(tabs) - 1
-                    elif sub == "delete" and arg:
-                        idxs = [i for i, t in enumerate(tabs) if t.name == arg]
-                        if not idxs:
-                            tabs[current].add(f"No tabs named '{arg}'")
-                        else:
-                            for i in reversed(idxs):
-                                tabs[i].stop()
-                                del tabs[i]
-                            if not tabs:
-                                return
-                            current = min(current, len(tabs) - 1)
-                    elif sub == "export":
-                        if arg:
-                            found = next((t for t in tabs if t.name == arg), None)
-                            if not found:
-                                tabs[current].add(f"No tabs named '{arg}'")
-                            else:
-                                export_log(found)
-                        else:
-                            export_log(tabs[current])
-                    else:
-                        tabs[current].add("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
-                continue
-            if lc == "cd" and rest:
-                tabs[current].cd(rest)
-                continue
-            if lc == "cwd" and not rest:
-                tabs[current].show_cwd()
-                continue
-            if lc == "run" and rest:
-                tabs[current].run_exec(rest)
-                continue
-            if lc == "makedir" and rest:
-                tabs[current].makedir(rest)
-                continue
-            if lc == "deldir" and rest:
-                tabs[current].deldir(rest)
-                continue
-            if lc == "history":
-                tabs[current].show_history()
-                continue
-            if lc == "files":
-                if rest:
-                    tabs[current].files(rest)
-                else:
-                    tabs[current].files("")
-                continue
-            if lc == "remove" and rest:
-                tabs[current].remove(rest)
-                continue
-            if lc == "echo" and rest:
-                tabs[current].add(rest)
-                continue
-            if lc == "make" and rest:
-                tabs[current].make(rest)
-                continue
-            if lc == "download" and rest:
-                try:
-                    parts = shlex.split(rest)
-                    url = parts[0]
-                    fname = parts[1] if len(parts) > 1 else None
-                    tabs[current].download(url, fname)
-                except ValueError:
-                    tabs[current].add("Usage: download <url> \"<filename>\"")
-                continue
-            if lc == "shutdown" and not rest:
-                if os.name == "nt":
-                    subprocess.run(["shutdown", "/s", "/t", "0"])
-                else:
-                    subprocess.run(["shutdown", "now"])
-                continue
-            if lc == "reboot" and not rest:
-                if os.name == "nt":
-                    subprocess.run(["shutdown", "/r", "/t", "0"])
-                else:
-                    subprocess.run(["reboot"])
-                continue
-            if lc == "alias" and rest:
-                define_alias(rest.split()[0], rest.split()[1])
-                continue
-            if lc == "tree":
-                try:
-                    parts = shlex.split(rest)
-                except ValueError:
-                    tabs[current].add('Usage: tree "<dir>"')
-                    continue
-                dir_arg = parts[0] if parts else None
-                tabs[current].tree(dir_arg)
-                continue
-            if lc == "color":
-                try:
-                    parts = shlex.split(rest)
-                except ValueError:
-                    tabs[current].add('Usage: color <thingtocolor> <color>')
-                    continue
-                if len(parts) != 2:
-                    tabs[current].add('Usage: color <thingtocolor> <color>')
-                    continue
-                target, col = parts
-                tabs[current].color(target, col)
-                continue
-            if lc == "clear":
-                tabs[current].clear()
-                continue
-            if lc == "read" and rest:
-                tabs[current].read(rest)
-                continue
-            if lc == "move" and rest:
-                try:
-                    parts = shlex.split(rest)
-                    if len(parts) != 2:
-                        raise ValueError
-                    tabs[current].move(parts[0], parts[1])
-                except ValueError:
-                    tabs[current].add("Usage: move <source> <destination>")
-                continue
-            if lc == "copy" and rest:
-                try:
-                    parts = shlex.split(rest)
-                    if len(parts) != 2:
-                        raise ValueError
-                    tabs[current].copy(parts[0], parts[1])
-                except ValueError:
-                    tabs[current].add("Usage: copy <source> <destination>")
-                continue
-            if lc == "kill" and rest:
-                try:
-                    parts = shlex.split(rest)
-                    if len(parts) != 1:
-                        raise ValueError
-                    tabs[current].kill(parts[0])
-                except ValueError:
-                    tabs[current].add("Usage: kill <processname>")
-                continue
-            tabs[current].add(f"Unknown: {cmd}")
+            commands = [c.strip() for c in line.split('&&') if c.strip()]
+            for cmd_line in commands:
+                current, should_exit = handle_single_command(cmd_line, tabs, current)
+                if should_exit:
+                    return
             continue
         if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
             inp = inp[:-1]
