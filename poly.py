@@ -788,8 +788,11 @@ def handle_single_command(cmd_line, tabs, current):
     if lc == "remove" and rest:
         tabs[current].remove(rest)
         return current, False
-    if lc == "echo" and rest:
-        tabs[current].add(rest)
+    if lc == "echo":
+        if rest:
+            tabs[current].add(rest)
+        else:
+            tabs[current].add("\n")
         return current, False
     if lc == "make" and rest:
         tabs[current].make(rest)
