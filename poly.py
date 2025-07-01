@@ -26,11 +26,46 @@ import re
 
 
 VERTICAL_COL = 23
-
-
-
 ALIASES = {}
 CUSTOM_COMMANDS = {}
+variables = {}
+variable_pattern = re.compile(r'\{([A-Za-z0-9_-]+)\}')
+
+
+
+def expand_variables(text, tab):
+    def repl(match):
+        name = match.group(1)
+        if name in variables:
+            return variables[name]
+        if name == 'computer':
+            return socket.gethostname()
+        elif name == 'date':
+            return datetime.datetime.now().strftime('%m/%d/%Y')
+        elif name == 'homedrive':
+            if os.name == 'nt':
+                return os.environ.get('SystemDrive', os.path.splitdrive(tab.cwd)[0])
+            else:
+                return '/'
+        elif name == 'homepath':
+            return os.path.expanduser('~')
+        elif name == 'os':
+            return 'windows' if os.name == 'nt' else 'linux'
+        elif name == 'random':
+            return str(random.randint(0, 32767))
+        elif name == 'appdata':
+            if os.name == 'nt':
+                return os.environ.get('APPDATA', '')
+            else:
+                return os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
+        elif name == 'time':
+            return datetime.datetime.now().strftime('%H:%M:%S')
+        elif name == 'username':
+            return getpass.getuser()
+        elif name == 'cwd':
+            return tab.cwd
+        return match.group(0)
+    return variable_pattern.sub(repl, text)
 
 
 
@@ -569,7 +604,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -778,6 +813,7 @@ def run_cli(stdscr):
                 continue
             if not line.strip():
                 continue
+            line = expand_variables(line, tabs[current])
             if mode != 'poly':
                 tabs[current].write_input(line)
                 continue
@@ -786,6 +822,19 @@ def run_cli(stdscr):
             else:
                 cmd, rest = line, ''
             lc = cmd.lower()
+            if lc == "variable":
+                if rest:
+                    parts = rest.split(' ', 1)
+                    name = parts[0]
+                    value = parts[1] if len(parts) > 1 else ''
+                    if not re.match(r'^[A-Za-z0-9_-]+$', name):
+                        tabs[current].add(f"Invalid variable name: {name}")
+                    else:
+                        variables[name] = value
+                        tabs[current].add(f"Variable '{name}' set to '{value}'")
+                else:
+                    tabs[current].add("Usage: variable <name> <value>")
+                continue
             if lc in ALIASES.keys():
                 lc = ALIASES[lc]
             if lc in CUSTOM_COMMANDS.keys():
