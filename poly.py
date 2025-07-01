@@ -23,6 +23,7 @@ import random
 import colorama
 import re
 import textwrap
+import argparse
 
 
 
@@ -1057,7 +1058,6 @@ def run_commands(cmds):
                 return
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--command', help='Run commands and exit')
     args = parser.parse_args()
