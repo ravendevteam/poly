@@ -1058,6 +1058,13 @@ def read_poly_script(path):
     except FileNotFoundError:
         return []
 
+def read_poly_script_nosplit(path):
+    try:
+        with open(os.path.expanduser(path), "r") as scriptfile:
+            return scriptfile.read()
+    except FileNotFoundError:
+        return 1
+
 def run_commands(cmds):
     global CLI_MODE
     CLI_MODE = True
@@ -1075,10 +1082,18 @@ def run_commands(cmds):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--command', help='Run commands and exit')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-c', '--command', help='Run commands and exit')
+    group.add_argument('scriptname', help='Run a script file', nargs='?')
     args = parser.parse_args()
     if args.command:
         run_commands(args.command)
+    elif args.scriptname:
+        content = read_poly_script_nosplit(args.scriptname)
+        if content == 1:
+            print(f"File not found: {args.scriptname}")
+            return
+        run_commands(content)
     else:
         try:
             curses.wrapper(run_cli)
