@@ -22,6 +22,7 @@ import importlib.util
 import random
 import colorama
 import re
+import textwrap
 
 
 
@@ -554,21 +555,34 @@ def draw_sidebar(stdscr, tabs, current_idx):
 
 
 
+def wrap_lines(lines, width):
+    if width <= 0:
+        return list(lines)
+    out = []
+    for line in lines:
+        wrapped = textwrap.wrap(line, width, replace_whitespace=False)
+        out.extend(wrapped if wrapped else [""])
+    return out
+
+
+
 def draw_messages(stdscr, tab):
     h, w = stdscr.getmaxyx()
     max_row = h - 2
     available = max_row - 2
+    width = w - VERTICAL_COL - 1
     with tab.lock:
-        length = len(tab.buffer)
+        wrapped = wrap_lines(tab.buffer, width)
+        length = len(wrapped)
         offset = min(max(tab.scroll, 0), max(length - available, 0))
         start = max(length - available - offset, 0)
-        msgs = tab.buffer[start:start + available]
+        msgs = wrapped[start:start + available]
     pid, bold = tab.color_settings.get("output", (1, curses.A_NORMAL))
     attr = curses.color_pair(pid) | bold
     for i, line in enumerate(msgs):
         y = 2 + i
         if y < max_row:
-            stdscr.addnstr(y, VERTICAL_COL + 1, line, w - VERTICAL_COL - 1, attr)
+            stdscr.addnstr(y, VERTICAL_COL + 1, line, width, attr)
 
 
 
@@ -704,6 +718,7 @@ def run_cli(stdscr):
     reading_polyrc = True
     while True:
         h, w = stdscr.getmaxyx()
+        width = w - (VERTICAL_COL + 1)
         stdscr.erase()
         draw_layout(stdscr, tabs[current])
         draw_sidebar(stdscr, tabs, current)
@@ -722,7 +737,7 @@ def run_cli(stdscr):
             if full.startswith(inp):
                 ghost = full[len(inp):]
         cwd = tabs[current].cwd
-        main_width = w - (VERTICAL_COL + 1)
+        main_width = width
         max_cwd = max(int(main_width * 0.3), 1)
         if len(cwd) > max_cwd:
             cwd_disp = "..." + cwd[-(max_cwd - 3):]
@@ -749,7 +764,7 @@ def run_cli(stdscr):
             except Exception:
                 continue
             tab = tabs[current]
-            max_scroll = max(len(tab.buffer) - (h - 4), 0)
+            max_scroll = max(len(wrap_lines(tab.buffer, width)) - (h - 4), 0)
             if bstate & curses.BUTTON4_PRESSED:
                 tab.scroll = min(tab.scroll + 1, max_scroll)
             elif bstate & curses.BUTTON5_PRESSED:
@@ -757,7 +772,7 @@ def run_cli(stdscr):
             continue
         if ch == curses.KEY_PPAGE:
             tab = tabs[current]
-            max_scroll = max(len(tab.buffer) - (h - 4), 0)
+            max_scroll = max(len(wrap_lines(tab.buffer, width)) - (h - 4), 0)
             tab.scroll = min(tab.scroll + (h - 4), max_scroll)
             continue
         if ch == curses.KEY_NPAGE:
