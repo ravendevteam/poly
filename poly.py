@@ -23,6 +23,7 @@ import random
 import colorama
 import re
 import textwrap
+import argparse
 
 
 
@@ -31,6 +32,7 @@ ALIASES = {}
 CUSTOM_COMMANDS = {}
 variables = {}
 variable_pattern = re.compile(r'\{([A-Za-z0-9_-]+)\}')
+CLI_MODE = False
 
 
 
@@ -140,6 +142,8 @@ class Tab:
         with self.lock:
             for line in text.splitlines():
                 self.buffer.append(line)
+                if CLI_MODE:
+                    print(line, flush=True)
     
     def clear(self):
         with self.lock:
@@ -163,8 +167,10 @@ class Tab:
             for line in proc.stderr:
                 self.add(line.rstrip('\n'))
             proc.wait()
-
-        threading.Thread(target=_worker, args=(program, self.cwd), daemon=True).start()
+        if CLI_MODE:
+            _worker(program, self.cwd)
+        else:
+            threading.Thread(target=_worker, args=(program, self.cwd), daemon=True).start()
 
     def cd(self, path):
         newdir = os.path.abspath(os.path.join(self.cwd, path))
@@ -618,7 +624,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable", "shutdown", "restart"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -816,7 +822,7 @@ def handle_single_command(cmd_line, tabs, current):
         else:
             subprocess.run(["shutdown", "now"])
         return current, False
-    if lc == "reboot" and not rest:
+    if lc == "restart" and not rest:
         if os.name == "nt":
             subprocess.run(["shutdown", "/r", "/t", "0"])
         else:
@@ -1052,11 +1058,32 @@ def read_poly_script(path):
     except FileNotFoundError:
         return []
 
+def run_commands(cmds):
+    global CLI_MODE
+    CLI_MODE = True
+    tabs = [Tab()]
+    current = 0
+    for line in cmds.splitlines():
+        if not line.strip():
+            continue
+        print(f"> {line}")
+        commands = [c.strip() for c in line.split('&&') if c.strip()]
+        for cmd_line in commands:
+            current, should_exit = handle_single_command(cmd_line, tabs, current)
+            if should_exit:
+                return
+
 def main():
-    try:
-        curses.wrapper(run_cli)
-    except KeyboardInterrupt:
-        pass
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--command', help='Run commands and exit')
+    args = parser.parse_args()
+    if args.command:
+        run_commands(args.command)
+    else:
+        try:
+            curses.wrapper(run_cli)
+        except KeyboardInterrupt:
+            pass
 
 
 
