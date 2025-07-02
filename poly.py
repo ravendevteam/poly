@@ -939,11 +939,13 @@ def run_cli(stdscr):
     tabs = [Tab()]
     current = 0
     inp = ""
+    cursor_pos = 0
     suggestions = []
     sugg_idx = 0
     script_chars = read_polyrc()
     script_index = 0
     reading_script = True
+
     while True:
         h, w = stdscr.getmaxyx()
         width = w - (VERTICAL_COL + 1)
@@ -975,7 +977,7 @@ def run_cli(stdscr):
         stdscr.addstr(h - 1, VERTICAL_COL + 1, prompt_str, normal_attr)
         if ghost:
             stdscr.addstr(h - 1, VERTICAL_COL + 1 + len(prompt_str), ghost, ghost_attr)
-        stdscr.move(h - 1, VERTICAL_COL + 4 + len(cwd_disp) + len(inp))
+        stdscr.move(h - 1, VERTICAL_COL + 4 + len(cwd_disp) + cursor_pos)
         stdscr.refresh()
         try:
             if script_index >= len(script_chars):
@@ -1015,21 +1017,37 @@ def run_cli(stdscr):
         if ch == curses.KEY_UP and suggestions:
             sugg_idx = (sugg_idx - 1) % len(suggestions)
             continue
-        if ch == curses.KEY_RIGHT and suggestions:
-            inp = suggestions[sugg_idx]
+        if ch == curses.KEY_RIGHT:
+            if suggestions and cursor_pos == len(inp):
+                inp = suggestions[sugg_idx]
+                cursor_pos = len(inp)
+            else:
+                cursor_pos = min(cursor_pos + 1, len(inp))
+            continue
+        if ch == curses.KEY_LEFT:
+            cursor_pos = max(cursor_pos - 1, 0)
+            continue
+        if ch == curses.KEY_HOME:
+            cursor_pos = 0
+            continue
+        if ch == curses.KEY_END:
+            cursor_pos = len(inp)
             continue
         if ch == "\t":
             current = (current + 1) % len(tabs)
             inp = ""
+            cursor_pos = 0
             continue
         if ch == curses.KEY_BTAB:
             current = (current - 1) % len(tabs)
             inp = ""
+            cursor_pos = 0
             continue
         if ch == "\x14":
             tabs.append(Tab())
             current = len(tabs) - 1
             inp = ""
+            cursor_pos = 0
             continue
         if ch == "\x17":
             tabs[current].stop()
@@ -1038,11 +1056,13 @@ def run_cli(stdscr):
                 return
             current = min(current, len(tabs) - 1)
             inp = ""
+            cursor_pos = 0
             continue
         if ch in ("\n", "\r"):
             script_index += 1
             line = inp
             inp = ""
+            cursor_pos = 0
             if line.strip():
                 tabs[current].history.append(line)
             if not reading_script:
@@ -1059,10 +1079,17 @@ def run_cli(stdscr):
                     return
             continue
         if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
-            inp = inp[:-1]
+            if cursor_pos > 0:
+                inp = inp[:cursor_pos - 1] + inp[cursor_pos:]
+                cursor_pos -= 1
+            continue
+        if ch == curses.KEY_DC:
+            if cursor_pos < len(inp):
+                inp = inp[:cursor_pos] + inp[cursor_pos+1:]
             continue
         if isinstance(ch, str) and ch.isprintable():
-            inp += ch
+            inp = inp[:cursor_pos] + ch + inp[cursor_pos:]
+            cursor_pos += 1
             script_index += 1
 
 def read_polyrc():
