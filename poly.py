@@ -1023,11 +1023,9 @@ def run_cli(stdscr):
                 tabs[current].add(f"> {line}")
             commands = [c.strip() for c in line.split('&&') if c.strip()]
             for cmd_line in commands:
-                current, should_exit, *script_chars_exists = handle_single_command(cmd_line, tabs, current)
-                if script_chars_exists:
-                    script_chars = script_chars_exists[0]
-
-                if script_chars_exists and script_chars != []:
+                current, should_exit, *script_chars_2 = handle_single_command(cmd_line, tabs, current)
+                if script_chars_2 and script_chars_2 != []:
+                    script_chars = script_chars_2[0]
                     reading_script = True
                     script_index = 0
 
