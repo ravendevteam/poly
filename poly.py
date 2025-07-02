@@ -901,6 +901,7 @@ def handle_command(cmd_line, tabs, current):
         buffer_len_after = len(tabs[current].buffer)
         output_len = buffer_len_after - buffer_len_before
         output = "\n".join(tabs[current].buffer[-output_len:])
+        output = output.replace("\\", "\\\\")
         tabs[current].buffer = tabs[current].buffer[:-output_len]
 
         try:
