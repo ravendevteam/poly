@@ -16,8 +16,7 @@ To compile from source, make sure you have Python 3.12.4 and Nuitka. Install the
 
 ## Features & Usage
 - **.polyrc:** Create a .polyrc file in your home directory to define initial commands to execute.
-- **Poly shell:** Poly has its own command set and autocomplete.
-- **Variables:** You can set variables using `variable <name> <value>`, and utilize them by enclosing in curly brackets, like `{name}`. There are preset variables as well, like `{username}`, `{computer}`, and `{cwd}`.
+- **Poly shell:** Poly has its own command set and autocomplete. You can set variables using `variable <name> <value>`, and utilize them by enclosing in curly brackets, like `{name}`. There are preset variables as well, like `{username}`, `{computer}`, and `{cwd}`. You can write custom scripts with the `.poly` file extension and execute them with Poly. You can chain multiple commands by adding a `&&`, like doing `echo Hello, && echo World!`.
 - **Tabs:** Poly has tabs for running multiple shell sessions at once.
 - **Tab modes:** You can set the mode of your current tab to switch from the Poly shell to Command Prompt, Powershell, or your preferred Linux shell, using `tab mode <win|pws|lnx>`.
 - **Creating a new tab:** CTRL + T
