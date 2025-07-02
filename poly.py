@@ -888,7 +888,32 @@ def handle_single_command(cmd_line, tabs, current):
     tabs[current].add(f"Unknown: {cmd}")
     return current, False
 
+def handle_command(cmd_line, tabs, current):
+    if " | " in cmd_line and tabs[current].mode == "poly":
+        if len(cmd_line.split(" | ")) < 2:
+            tabs[current].add("Piping requires a second operand")
+            return current, False
+        
+        buffer_len_before = len(tabs[current].buffer)
+        current, should_exit, *script_chars = handle_single_command(cmd_line.split(" | ")[0], tabs, current)
+        if should_exit:
+            return current, True
+        buffer_len_after = len(tabs[current].buffer)
+        output_len = buffer_len_after - buffer_len_before
+        output = "\n".join(tabs[current].buffer[-output_len:])
+        tabs[current].buffer = tabs[current].buffer[:-output_len]
 
+        try:
+            commands = cmd_line.split(" | ")
+            if len(commands) > 2:
+                return handle_command(commands[1] + " " + output + " | " + " | ".join(commands[2:]), tabs, current)
+            else:
+                return handle_command(commands[1] + " " + output, tabs, current)
+        except RecursionError:
+            tabs[current].add("Pipe operation too deep")
+            return current, False
+
+    return handle_single_command(cmd_line, tabs, current)
 
 def run_cli(stdscr):
     curses.curs_set(1)
@@ -1023,7 +1048,7 @@ def run_cli(stdscr):
                 tabs[current].add(f"> {line}")
             commands = [c.strip() for c in line.split('&&') if c.strip()]
             for cmd_line in commands:
-                current, should_exit, *script_chars_2 = handle_single_command(cmd_line, tabs, current)
+                current, should_exit, *script_chars_2 = handle_command(cmd_line, tabs, current)
                 if script_chars_2 and script_chars_2 != []:
                     script_chars = script_chars_2[0]
                     reading_script = True
