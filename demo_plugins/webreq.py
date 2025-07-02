@@ -1,6 +1,6 @@
 """
     Written by lilaf
-    Last updated: June 29, 2025
+    Last updated: July 2, 2025
     Better web requests for Poly. 
 
     This plugin is free software and may be copied and used in any way.
@@ -12,8 +12,7 @@ def validate_url(url):
         return True
     return False
 
-def validateurlcmd(args, rest):
-    tab = args[0]
+def validateurlcmd(tab, args, rest):
     if not rest:
         tab.add("validateurl needs arguments!")
         return
@@ -23,8 +22,7 @@ def validateurlcmd(args, rest):
     else:
         tab.add(f"{rest} is not a valid URL")
 
-def getrequest(args, rest):
-    tab = args[0]
+def getrequest(tab, args, rest):
     if not rest:
         tab.add("getrequest needs arguments!")
         return
@@ -42,9 +40,8 @@ def getrequest(args, rest):
     tab.add(request.read())
 
 def register_plugin(app_context):
-    tab = app_context["tab"]
     define_command = app_context["define_command"]
     define_alias = app_context["define_alias"]
 
-    define_command("getrequest", getrequest, [tab])
-    define_command("validateurl", validateurlcmd, [tab])
+    define_command("getrequest", getrequest, [])
+    define_command("validateurl", validateurlcmd, [])

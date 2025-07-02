@@ -1,6 +1,6 @@
 """
     Written by lilaf
-    Last updated: June 29, 2025
+    Last updated: July 2, 2025
     GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! GAMBLING! 
 
     This plugin is free software and may be copied and used in any way.
@@ -45,8 +45,7 @@ win_text = """
 Good job! You won!
 """
 
-def run_gambling(args, rest):
-    tab = args[0]
+def run_gambling(tab, args, rest):
 
     num1 = random.randrange(0, 3)
     num2 = random.randrange(0, 3)
@@ -63,7 +62,5 @@ def run_gambling(args, rest):
     
 
 def register_plugin(app_context):
-    tab = app_context["tab"]
     define_command = app_context["define_command"]
-
-    define_command("gamble", run_gambling, [tab])
+    define_command("gamble", run_gambling, [])

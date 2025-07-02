@@ -725,7 +725,7 @@ def handle_single_command(cmd_line, tabs, current):
     if lc in ALIASES.keys():
         lc = ALIASES[lc]
     if lc in CUSTOM_COMMANDS.keys():
-        CUSTOM_COMMANDS[lc](CUSTOM_COMMANDS[f"__{lc}_args"], rest)
+        CUSTOM_COMMANDS[lc](tabs[current], CUSTOM_COMMANDS[f"__{lc}_args"], rest)
         return current, False
     if lc in ("exit", "quit"):
         return current, True
