@@ -1,0 +1,8 @@
+{
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false,
+  "reportOptionalSubscript": false,
+  "reportOptionalMemberAccess": false,
+  "reportGeneralTypeIssues": false,
+  "reportCallIssue": false
+}
