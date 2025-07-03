@@ -83,6 +83,19 @@ def define_command(name, function, arguments):
 
 
 
+def api_run_command(cmd_line): # Returns output of command (different from run_commands)
+    temp_tabs = [Tab()]
+
+    commands = [c.strip() for c in cmd_line.split('&&') if c.strip()]
+    for cmd_line in commands:
+        current, should_exit = handle_command(cmd_line, temp_tabs, 0)
+        if should_exit:
+            sys.exit()
+    
+    output = "\n".join(temp_tabs[0].buffer)
+    return output
+
+
 def load_icon(icon_name):
     icon_path = os.path.join(os.path.dirname(__file__), icon_name)
     if getattr(sys, 'frozen', False):
@@ -134,7 +147,8 @@ class Tab:
         app_context = {
             "tab": self,
             "define_command": define_command,
-            "define_alias": define_alias
+            "define_alias": define_alias,
+            "run_command": api_run_command
         }
         self.plugins = load_plugins(app_context)
 
@@ -1127,7 +1141,7 @@ def run_commands(cmds):
         print(f"> {line}")
         commands = [c.strip() for c in line.split('&&') if c.strip()]
         for cmd_line in commands:
-            current, should_exit = handle_single_command(cmd_line, tabs, current)
+            current, should_exit = handle_command(cmd_line, tabs, current)
             if should_exit:
                 return
 
