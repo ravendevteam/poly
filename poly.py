@@ -446,6 +446,100 @@ class Tab:
         for i, entry in enumerate(self.history):
             self.add(f"{i + 1}: {entry}")
 
+    def show_last_commands(self, stdscr):
+        if not self.history:
+            self.add("No history available.")
+            return None
+
+        def create_window():
+            nonlocal history_window, window_height, window_width, start_y, start_x, max_display
+            height, width = stdscr.getmaxyx()
+            
+            window_height = min(len(self.history) + 4, height - 4)
+            window_width = min(width - 10, 80)
+            
+            window_height = max(window_height, 6)
+            window_width = max(window_width, 30)
+            
+            start_y = max(0, (height - window_height) // 2)
+            start_x = max(0, (width - window_width) // 2)
+            
+            history_window = curses.newwin(window_height, window_width, start_y, start_x)
+            history_window.keypad(True)
+            
+            max_display = window_height - 4
+
+        history_window = None
+        window_height = 0
+        window_width = 0
+        start_y = 0
+        start_x = 0
+        max_display = 0
+        
+        create_window()
+        
+        current_pos = 0
+        start_idx = 0
+        
+        while True:
+            try:
+                history_window.clear()
+                history_window.border()
+                title = " Command History - Use Up/Down arrows, Enter to select, Esc to cancel "
+                if len(title) > window_width - 4:
+                    title = " History - Enter:Select Esc:Cancel "
+                history_window.addstr(0, max(1, (window_width - len(title)) // 2), title, curses.A_BOLD)
+                
+                for i in range(max_display):
+                    idx = start_idx + i
+                    if idx >= len(self.history):
+                        break
+                        
+                    entry = self.history[-(idx+1)]
+                    display_text = f"{idx+1}: {entry}"
+                    if len(display_text) > window_width - 6:
+                        display_text = display_text[:window_width - 9] + "..."
+                    
+                    if i == current_pos:
+                        history_window.addstr(i + 2, 2, display_text, curses.A_REVERSE)
+                    else:
+                        history_window.addstr(i + 2, 2, display_text)
+                
+                history_window.refresh()
+                
+                key = history_window.getch()
+                
+                if key == 27:
+                    return None
+                elif key == curses.KEY_RESIZE:
+                    curses.update_lines_cols()
+                    create_window()
+                    max_display = max(1, max_display)
+                    current_pos = min(current_pos, max_display - 1)
+                elif key == curses.KEY_UP:
+                    if current_pos > 0:
+                        current_pos -= 1
+                    elif start_idx > 0:
+                        start_idx -= 1
+                elif key == curses.KEY_DOWN:
+                    if current_pos < max_display - 1 and start_idx + current_pos < len(self.history) - 1:
+                        current_pos += 1
+                    elif start_idx + max_display < len(self.history):
+                        start_idx += 1
+                elif key == curses.KEY_NPAGE:
+                    start_idx = min(start_idx + max_display, len(self.history) - max_display)
+                    start_idx = max(0, start_idx)
+                elif key == curses.KEY_PPAGE:
+                    start_idx = max(0, start_idx - max_display)
+                elif key == 10 or key == 13:
+                    idx = start_idx + current_pos
+                    if idx < len(self.history):
+                        return self.history[-(idx+1)]
+            except curses.error:
+                create_window()
+        
+        return None
+
     def set_mode(self, mode):
         m = mode.lower()
         if m not in ('poly', 'win', 'pws', 'lnx'):
@@ -638,7 +732,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable", "shutdown", "restart"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable", "shutdown", "restart", "last"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -803,6 +897,26 @@ def handle_single_command(cmd_line, tabs, current):
     if lc == "history":
         tabs[current].show_history()
         return current, False
+    if lc == "last":
+        curses.def_prog_mode()
+        curses.endwin()
+        
+        stdscr = curses.initscr()
+        curses.start_color()
+        curses.cbreak()
+        curses.noecho()
+        stdscr.keypad(True)
+        
+        try:
+            selected_cmd = tabs[current].show_last_commands(stdscr)
+        finally:
+            curses.endwin()
+            curses.reset_prog_mode()
+            stdscr.refresh()
+        
+        if selected_cmd:
+            tabs[current].add(f"> {selected_cmd}")
+            return handle_command(selected_cmd, tabs, current)
     if lc == "files":
         if rest:
             tabs[current].files(rest)
