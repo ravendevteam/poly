@@ -452,7 +452,14 @@ class Tab:
             return None
 
         height, width = stdscr.getmaxyx()
-        history_window = curses.newwin(min(len(self.history) + 4, height - 4), width - 4, 2, 2)
+        
+        window_height = min(len(self.history) + 4, height - 4)
+        window_width = min(width - 10, 80)
+
+        start_y = (height - window_height) // 2
+        start_x = (width - window_width) // 2
+
+        history_window = curses.newwin(window_height, window_width, start_y, start_x)
         history_window.keypad(True)
         history_window.clear()
         history_window.border()
@@ -460,7 +467,7 @@ class Tab:
 
         current_pos = 0
         start_idx = 0
-        max_display = min(len(self.history), height - 8)
+        max_display = window_height - 4
         
         while True:
             history_window.clear()
@@ -474,8 +481,8 @@ class Tab:
                     
                 entry = self.history[-(idx+1)]
                 display_text = f"{idx+1}: {entry}"
-                if len(display_text) > width - 10:
-                    display_text = display_text[:width - 13] + "..."
+                if len(display_text) > window_width - 6:
+                    display_text = display_text[:window_width - 9] + "..."
                 
                 if i == current_pos:
                     history_window.addstr(i + 2, 2, display_text, curses.A_REVERSE)
