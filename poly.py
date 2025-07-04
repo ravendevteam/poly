@@ -1135,6 +1135,7 @@ def run_cli(stdscr):
                 try:
                     clipboard_text = pyperclip.paste()
                     if clipboard_text:
+                        clipboard_text = clipboard_text.replace('\r\n', ' ').replace('\n', ' ').replace('\r', ' ')
                         inp = inp[:cursor_pos] + clipboard_text + inp[cursor_pos:]
                         cursor_pos += len(clipboard_text)
                 except Exception:
