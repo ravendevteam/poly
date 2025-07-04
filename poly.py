@@ -451,23 +451,35 @@ class Tab:
             self.add("No history available.")
             return None
 
-        height, width = stdscr.getmaxyx()
+        def create_window():
+            nonlocal history_window, window_height, window_width, start_y, start_x, max_display
+            height, width = stdscr.getmaxyx()
+            
+            window_height = min(len(self.history) + 4, height - 4)
+            window_width = min(width - 10, 80)
+            
+            window_height = max(window_height, 6)
+            window_width = max(window_width, 30)
+            
+            start_y = max(0, (height - window_height) // 2)
+            start_x = max(0, (width - window_width) // 2)
+            
+            history_window = curses.newwin(window_height, window_width, start_y, start_x)
+            history_window.keypad(True)
+            
+            max_display = window_height - 4
+
+        history_window = None
+        window_height = 0
+        window_width = 0
+        start_y = 0
+        start_x = 0
+        max_display = 0
         
-        window_height = min(len(self.history) + 4, height - 4)
-        window_width = min(width - 10, 80)
-
-        start_y = (height - window_height) // 2
-        start_x = (width - window_width) // 2
-
-        history_window = curses.newwin(window_height, window_width, start_y, start_x)
-        history_window.keypad(True)
-        history_window.clear()
-        history_window.border()
-        history_window.addstr(0, 2, " Command History - Use Up/Down arrows, Enter to select, Esc to cancel ", curses.A_BOLD)
+        create_window()
 
         current_pos = 0
         start_idx = 0
-        max_display = window_height - 4
         
         while True:
             history_window.clear()
