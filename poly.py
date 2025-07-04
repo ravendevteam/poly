@@ -477,54 +477,66 @@ class Tab:
         max_display = 0
         
         create_window()
-
+        
         current_pos = 0
         start_idx = 0
         
         while True:
-            history_window.clear()
-            history_window.border()
-            history_window.addstr(0, 2, " Command History - Use Up/Down arrows, Enter to select, Esc to cancel ", curses.A_BOLD)
-            
-            for i in range(max_display):
-                idx = start_idx + i
-                if idx >= len(self.history):
-                    break
-                    
-                entry = self.history[-(idx+1)]
-                display_text = f"{idx+1}: {entry}"
-                if len(display_text) > window_width - 6:
-                    display_text = display_text[:window_width - 9] + "..."
+            try:
+                history_window.clear()
+                history_window.border()
+                title = " Command History - Use Up/Down arrows, Enter to select, Esc to cancel "
+                if len(title) > window_width - 4:
+                    title = " History - Enter:Select Esc:Cancel "
+                history_window.addstr(0, max(1, (window_width - len(title)) // 2), title, curses.A_BOLD)
                 
-                if i == current_pos:
-                    history_window.addstr(i + 2, 2, display_text, curses.A_REVERSE)
-                else:
-                    history_window.addstr(i + 2, 2, display_text)
-            
-            history_window.refresh()
-            
-            key = history_window.getch()
-            
-            if key == 27:
-                return None
-            elif key == curses.KEY_UP:
-                if current_pos > 0:
-                    current_pos -= 1
-                elif start_idx > 0:
-                    start_idx -= 1
-            elif key == curses.KEY_DOWN:
-                if current_pos < max_display - 1 and start_idx + current_pos < len(self.history) - 1:
-                    current_pos += 1
-                elif start_idx + max_display < len(self.history):
-                    start_idx += 1
-            elif key == curses.KEY_NPAGE:
-                start_idx = min(start_idx + max_display, len(self.history) - max_display)
-            elif key == curses.KEY_PPAGE:
-                start_idx = max(0, start_idx - max_display)
-            elif key == 10 or key == 13:
-                idx = start_idx + current_pos
-                if idx < len(self.history):
-                    return self.history[-(idx+1)]
+                for i in range(max_display):
+                    idx = start_idx + i
+                    if idx >= len(self.history):
+                        break
+                        
+                    entry = self.history[-(idx+1)]
+                    display_text = f"{idx+1}: {entry}"
+                    if len(display_text) > window_width - 6:
+                        display_text = display_text[:window_width - 9] + "..."
+                    
+                    if i == current_pos:
+                        history_window.addstr(i + 2, 2, display_text, curses.A_REVERSE)
+                    else:
+                        history_window.addstr(i + 2, 2, display_text)
+                
+                history_window.refresh()
+                
+                key = history_window.getch()
+                
+                if key == 27:
+                    return None
+                elif key == curses.KEY_RESIZE:
+                    curses.update_lines_cols()
+                    create_window()
+                    max_display = max(1, max_display)
+                    current_pos = min(current_pos, max_display - 1)
+                elif key == curses.KEY_UP:
+                    if current_pos > 0:
+                        current_pos -= 1
+                    elif start_idx > 0:
+                        start_idx -= 1
+                elif key == curses.KEY_DOWN:
+                    if current_pos < max_display - 1 and start_idx + current_pos < len(self.history) - 1:
+                        current_pos += 1
+                    elif start_idx + max_display < len(self.history):
+                        start_idx += 1
+                elif key == curses.KEY_NPAGE:
+                    start_idx = min(start_idx + max_display, len(self.history) - max_display)
+                    start_idx = max(0, start_idx)
+                elif key == curses.KEY_PPAGE:
+                    start_idx = max(0, start_idx - max_display)
+                elif key == 10 or key == 13:
+                    idx = start_idx + current_pos
+                    if idx < len(self.history):
+                        return self.history[-(idx+1)]
+            except curses.error:
+                create_window()
         
         return None
 
