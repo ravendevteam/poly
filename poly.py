@@ -24,11 +24,8 @@ import colorama
 import re
 import textwrap
 import argparse
-try:
-    import pyperclip
-    CLIPBOARD_AVAILABLE = True
-except ImportError:
-    CLIPBOARD_AVAILABLE = False
+import pyperclip
+
 
 
 VERTICAL_COL = 23
@@ -1131,7 +1128,7 @@ def run_cli(stdscr):
                 tab.scroll = min(tab.scroll + 1, max_scroll)
             elif bstate & curses.BUTTON5_PRESSED:
                 tab.scroll = max(tab.scroll - 1, 0)
-            elif bstate & curses.BUTTON3_PRESSED and CLIPBOARD_AVAILABLE:
+            elif bstate & curses.BUTTON3_PRESSED:
                 try:
                     clipboard_text = pyperclip.paste()
                     if clipboard_text:
