@@ -84,7 +84,7 @@ def define_command(name, function, arguments):
 
 
 
-def api_run_command(cmd_line): # Returns output of command (different from run_commands)
+def api_run_command(cmd_line):
     temp_tabs = [Tab()]
 
     commands = [c.strip() for c in cmd_line.split('&&') if c.strip()]
