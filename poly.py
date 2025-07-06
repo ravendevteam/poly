@@ -424,13 +424,22 @@ class Tab:
 
     def kill(self, process_name):
         try:
-            result = subprocess.run(
-                ["taskkill", "/F", "/IM", process_name],
-                capture_output=True,
-                text=True
-            )
+            if os.name == "nt":
+                result = subprocess.run(
+                    ["taskkill", "/F", "/IM", process_name],
+                    capture_output=True,
+                    text=True
+                )
+                no_output_text = f"No output from kill for '{process_name}'"
+            else:
+                result = subprocess.run(
+                    ["pkill", "-9", process_name],
+                    capture_output=True,
+                    text=True
+                )
+                no_output_text = ""
             output = (result.stdout or "") + (result.stderr or "")
-            self.add(output.strip() or f"No output from taskkill for '{process_name}'")
+            self.add(output.strip() or no_output_text)
         except FileNotFoundError:
             self.add("kill: system command not found on system")
         except Exception as e:
