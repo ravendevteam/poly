@@ -24,6 +24,7 @@ import colorama
 import re
 import textwrap
 import argparse
+import pyperclip
 
 
 
@@ -1136,6 +1137,15 @@ def run_cli(stdscr):
                 tab.scroll = min(tab.scroll + 1, max_scroll)
             elif bstate & curses.BUTTON5_PRESSED:
                 tab.scroll = max(tab.scroll - 1, 0)
+            elif bstate & curses.BUTTON3_PRESSED:
+                try:
+                    clipboard_text = pyperclip.paste()
+                    if clipboard_text:
+                        clipboard_text = clipboard_text.replace('\r\n', ' ').replace('\n', ' ').replace('\r', ' ')
+                        inp = inp[:cursor_pos] + clipboard_text + inp[cursor_pos:]
+                        cursor_pos += len(clipboard_text)
+                except Exception:
+                    pass
             continue
         if ch == curses.KEY_PPAGE:
             tab = tabs[current]
