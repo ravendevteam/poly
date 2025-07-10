@@ -928,7 +928,7 @@ def handle_single_command(cmd_line, tabs, current):
         else:
             try:
                 index = int(rest)
-                selected_cmd = tabs[current].history[-(index + 2)] # +2 and not +1 to ignore the entry of the current cmd
+                selected_cmd = tabs[current].history[-(index + 2)]
             except Exception:
                 tabs[current].add("Usage: last <index>\nindex must be less than the length of the history")
                 return current, False
