@@ -908,25 +908,38 @@ def handle_single_command(cmd_line, tabs, current):
         tabs[current].show_history()
         return current, False
     if lc == "last":
-        curses.def_prog_mode()
-        curses.endwin()
-        
-        stdscr = curses.initscr()
-        curses.start_color()
-        curses.cbreak()
-        curses.noecho()
-        stdscr.keypad(True)
-        
-        try:
-            selected_cmd = tabs[current].show_last_commands(stdscr)
-        finally:
+        selected_cmd = ""
+        if not rest:
+            curses.def_prog_mode()
             curses.endwin()
-            curses.reset_prog_mode()
-            stdscr.refresh()
-        
+    
+            stdscr = curses.initscr()
+            curses.start_color()
+            curses.cbreak()
+            curses.noecho()
+            stdscr.keypad(True)
+
+            try:
+                selected_cmd = tabs[current].show_last_commands(stdscr)
+            finally:
+                curses.endwin()
+                curses.reset_prog_mode()
+                stdscr.refresh()
+        else:
+            try:
+                index = int(rest)
+                selected_cmd = tabs[current].history[-(index + 2)]
+            except Exception:
+                tabs[current].add("Usage: last <index>\nindex must be less than the length of the history")
+                return current, False
+    
         if selected_cmd:
             tabs[current].add(f"> {selected_cmd}")
-            return handle_command(selected_cmd, tabs, current)
+            try:
+                return handle_command(selected_cmd, tabs, current)
+            except RecursionError:
+                tabs[current].add("Recursion prevented (did you run last back to back?).")
+                return current, False
     if lc == "files":
         if rest:
             tabs[current].files(rest)
