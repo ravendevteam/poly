@@ -938,7 +938,7 @@ def handle_single_command(cmd_line, tabs, current):
             try:
                 return handle_command(selected_cmd, tabs, current)
             except RecursionError:
-                tabs[current].add("Got RecursionError when running last! (did you run last back to back?)")
+                tabs[current].add("Recursion prevented (did you run last back to back?).")
                 return current, False
     if lc == "files":
         if rest:
