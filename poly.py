@@ -1223,7 +1223,7 @@ def run_cli(stdscr):
             line = inp
             inp = ""
             cursor_pos = 0
-            if line.strip():
+            if line.strip() and tabs[current].mode == 'poly':
                 tabs[current].history.append(line)
             if not reading_script:
                 tabs[current].add(f"> {line}")
