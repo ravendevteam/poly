@@ -916,6 +916,12 @@ def handle_single_command(cmd_line, tabs, current):
             stdscr = curses.initscr()
             curses.start_color()
             curses.cbreak()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_WHITE, -1)
+            if getattr(curses, 'COLORS', 0) >= 16:
+                curses.init_pair(2, 8, -1)
+            else:
+                curses.init_pair(2, curses.COLOR_WHITE, -1)
             curses.noecho()
             stdscr.keypad(True)
 
