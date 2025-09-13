@@ -1,6 +1,8 @@
 import locale
-locale.setlocale(locale.LC_ALL, '')
-
+try:
+    locale.setlocale(locale.LC_ALL, '')
+except locale.Error:
+    locale.setlocale(locale.LC_ALL, 'C')
 import os
 import sys
 import threading
@@ -10,31 +12,182 @@ import time
 import getpass
 import socket
 import curses
-import tkinter as tk
-from tkinter import filedialog
-import subprocess
 import glob
 import shutil
 import shlex
-import urllib.request
 import urllib.parse
 import importlib.util
 import random
-import colorama
 import re
-import textwrap
 import argparse
-import pyperclip
+import unicodedata
+import queue
+try:
+    import pyperclip
+except Exception:
+    pyperclip = None
+import io
 
 
 
+GLOBAL_SHUTDOWN = threading.Event()
 VERTICAL_COL = 23
 ALIASES = {}
 CUSTOM_COMMANDS = {}
+_PLUGINS_LOADED = False
+_LOADED_PLUGINS = []
 variables = {}
 variable_pattern = re.compile(r'\{([A-Za-z0-9_-]+)\}')
 CLI_MODE = False
+MAX_BUFFER_LINES = 20000
+COMPLETION_DEBOUNCE_MS = 100
+COMPLETION_MIN_PREFIX = 0
+COMPLETION_MAX_RESULTS = 200
+_completion_cache_key = None
+_completion_cache_time = 0.0
+_completion_cache_results = []
+TABS_LOCK = threading.RLock()
 
+
+
+def _safe_get_tab(tabs, idx):
+    with TABS_LOCK:
+        if not tabs:
+            return None, idx
+        ci = idx
+        if ci < 0:
+            ci = 0
+        if ci >= len(tabs):
+            ci = len(tabs) - 1
+        return tabs[ci], ci
+
+
+
+def _invalidate_completion_cache():
+    global _completion_cache_key, _completion_cache_time, _completion_cache_results
+    _completion_cache_key = None
+    _completion_cache_results = []
+    _completion_cache_time = 0.0
+
+
+
+def _char_display_width(ch: str) -> int:
+    try:
+        if not ch:
+            return 0
+        if unicodedata.combining(ch):
+            return 0
+        eaw = unicodedata.east_asian_width(ch)
+        return 2 if eaw in ("W", "F") else 1
+    except Exception:
+        return 1
+
+
+
+def _display_width(s: str) -> int:
+    return sum(_char_display_width(ch) for ch in s)
+
+
+
+def _slice_by_display_cols(s: str, start_col: int, max_cols: int):
+    if start_col < 0:
+        start_col = 0
+    used = 0
+    cur_col = 0
+    start_idx = 0
+    for i, ch in enumerate(s):
+        w = _char_display_width(ch)
+        if cur_col + w > start_col:
+            start_idx = i
+            break
+        cur_col += w
+    else:
+        return "", len(s), len(s), 0
+    parts = []
+    for j in range(start_idx, len(s)):
+        ch = s[j]
+        w = _char_display_width(ch)
+        if used + w > max_cols:
+            end_idx = j
+            return ("".join(parts), start_idx, end_idx, used)
+        parts.append(ch)
+        used += w
+    end_idx = len(s)
+    return ("".join(parts), start_idx, end_idx, used)
+
+
+
+def _elide_left(s: str, room_cols: int) -> str:
+    if _display_width(s) <= room_cols:
+        return s
+    if room_cols <= 0:
+        return ""
+    if room_cols <= 3:
+        return "..."[:room_cols]
+    keep_cols = room_cols - 3
+    tail, _, _, _ = _slice_by_display_cols(s, _display_width(s) - keep_cols, keep_cols)
+    return "..." + tail
+
+
+
+def _elide_right(s: str, room_cols: int) -> str:
+    total = _display_width(s)
+    if total <= room_cols:
+        return s
+    if room_cols <= 0:
+        return ""
+    if room_cols <= 3:
+        return "..."[:room_cols]
+    head, _, _, _ = _slice_by_display_cols(s, 0, room_cols - 3)
+    return head + "..."
+
+
+
+def _wrap_display_line(s: str, width: int):
+    if width is None or width <= 0:
+        return [s] if s != "" else [""]
+    if s == "":
+        return [""]
+    out = []
+    start_col = 0
+    total_cols = _display_width(s)
+    if width <= 0:
+        return [s]
+    while start_col < total_cols:
+        seg, _, _, used = _slice_by_display_cols(s, start_col, width)
+        out.append(seg)
+        if used <= 0:
+            break
+        start_col += used
+    return out if out else [""]
+
+
+
+def _sanitized_env():
+    env = os.environ.copy()
+    for k in list(env.keys()):
+        if k.startswith(("LD_", "DYLD_")) or k in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONWARNINGS"}:
+            env.pop(k, None)
+    return env
+
+
+
+def _resolve_cmd_path(cmd):
+    try:
+        if os.path.isabs(cmd) and os.path.exists(cmd):
+            return cmd
+        resolved = shutil.which(cmd)
+        return resolved or cmd
+    except Exception:
+        return cmd
+
+
+
+def _quote_pipeline_arg(text: str) -> str:
+    s = text.replace('\\', '\\\\')
+    s = s.replace('"', '\\"')
+    s = s.replace('\r\n', '\\n').replace('\n', '\\n').replace('\r', '\\n')
+    return f'"{s}"'
 
 
 def expand_variables(text, tab):
@@ -74,36 +227,89 @@ def expand_variables(text, tab):
 
 
 def define_alias(original, alias):
-    ALIASES[original] = alias
+    ALIASES[original.lower()] = alias
+    _invalidate_completion_cache()
 
 
 
 def define_command(name, function, arguments):
-    CUSTOM_COMMANDS[name] = function
-    CUSTOM_COMMANDS[f"__{name}_args"] = arguments
+    key = name.lower()
+    CUSTOM_COMMANDS[key] = function
+    CUSTOM_COMMANDS[f"__{key}_args"] = arguments
+    _invalidate_completion_cache()
 
 
 
 def api_run_command(cmd_line):
-    temp_tabs = [Tab()]
+    exit_requested = False
+    temp_tabs = [Tab(load_plugins_on_init=True)]
 
-    commands = [c.strip() for c in cmd_line.split('&&') if c.strip()]
-    for cmd_line in commands:
-        current, should_exit = handle_command(cmd_line, temp_tabs, 0)
-        if should_exit:
-            sys.exit()
-    
+    class _TabStream:
+        def __init__(self, tab):
+            self.tab = tab
+            self._buf = ""
+        def write(self, s):
+            if not isinstance(s, str):
+                s = str(s)
+            self._buf += s
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                self.tab.add(line)
+        def flush(self):
+            if self._buf:
+                self.tab.add(self._buf)
+                self._buf = ""
+    exec_out = _TabStream(temp_tabs[0])
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout = exec_out
+    sys.stderr = exec_out
+    try:
+        try:
+            temp_tabs[0].clear_cancel()
+        except Exception:
+            pass
+        commands = [c.strip() for c in cmd_line.split('&&') if c.strip()]
+        for cmd_line in commands:
+            try:
+                if temp_tabs[0].is_cancelled():
+                    break
+            except Exception:
+                pass
+            current, should_exit, _ = handle_command(cmd_line, temp_tabs, 0, force_sync=True)
+            if should_exit:
+                exit_requested = True
+                break
+            try:
+                while True:
+                    alive = [t for t in list(temp_tabs[0].workers) if t.is_alive()]
+                    if not alive:
+                        break
+                    for t in alive:
+                        try:
+                            t.join(timeout=0.1)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        _invalidate_completion_cache()
+    finally:
+        try:
+            exec_out.flush()
+        except Exception:
+            pass
+        sys.stdout = saved_out
+        sys.stderr = saved_err
+    try:
+        alive = [t for t in list(temp_tabs[0].workers) if t.is_alive()]
+        for t in alive:
+            try:
+                t.join(timeout=0.2)
+            except Exception:
+                pass
+    except Exception:
+        pass
     output = "\n".join(temp_tabs[0].buffer)
-    return output
-
-
-def load_icon(icon_name):
-    icon_path = os.path.join(os.path.dirname(__file__), icon_name)
-    if getattr(sys, 'frozen', False):
-        icon_path = os.path.join(sys._MEIPASS, icon_name)
-    if os.path.exists(icon_path):
-        return QIcon(icon_path)
-    return None
+    return output, exit_requested
 
 
 
@@ -112,6 +318,19 @@ def load_plugins(app_context):
     plugins_dir = os.path.join(user_home, "plplugins")
     os.makedirs(plugins_dir, exist_ok=True)
     loaded_plugins = []
+    tab = None
+    try:
+        tab = app_context.get("tab") if isinstance(app_context, dict) else None
+    except Exception:
+        tab = None
+    def _log(msg):
+        if tab is not None:
+            tab.add(msg)
+        else:
+            try:
+                print(msg)
+            except Exception:
+                pass
     for filename in os.listdir(plugins_dir):
         if filename.endswith(".py") and not filename.startswith("_"):
             plugin_path = os.path.join(plugins_dir, filename)
@@ -123,16 +342,31 @@ def load_plugins(app_context):
                 if hasattr(module, "register_plugin"):
                     module.register_plugin(app_context)
                     loaded_plugins.append(mod_name)
-                    print(f"Plugin '{mod_name}' loaded successfully from {plugins_dir}")
+                    _log(f"Plugin '{mod_name}' loaded successfully from {plugins_dir}")
             except Exception as e:
-                print(f"Failed to load plugin '{filename}' from {plugins_dir}: {e}")
+                _log(f"Failed to load plugin '{filename}' from {plugins_dir}: {e}")
     return loaded_plugins
 
 
 
-class Tab:
+def ensure_plugins_loaded(tab=None):
+    global _PLUGINS_LOADED, _LOADED_PLUGINS
+    if _PLUGINS_LOADED:
+        return _LOADED_PLUGINS
+    app_context = {
+        "tab": tab,
+        "define_command": define_command,
+        "define_alias": define_alias,
+        "run_command": api_run_command
+    }
+    _LOADED_PLUGINS = load_plugins(app_context)
+    _PLUGINS_LOADED = True
+    return _LOADED_PLUGINS
 
-    def __init__(self, name="New Tab"):
+
+
+class Tab:
+    def __init__(self, name="New Tab", load_plugins_on_init=True):
         self.name = name
         self.mode = 'poly'
         self.cwd = os.getcwd()
@@ -144,176 +378,425 @@ class Tab:
         self.lock = threading.Lock()
         self.shell_proc = None
         self.readers = []
+        self.workers = []
         self.stdin_lock = threading.Lock()
-        app_context = {
-            "tab": self,
-            "define_command": define_command,
-            "define_alias": define_alias,
-            "run_command": api_run_command
-        }
-        self.plugins = load_plugins(app_context)
+        self.wrap_cache_width = None
+        self.wrap_cache_lines = []
+        self.wrap_cache_counts = []
+        self.plugins = ensure_plugins_loaded(self) if load_plugins_on_init else list(_LOADED_PLUGINS)
+        self.current_proc = None
+        self.current_proc_lock = threading.Lock()
+        self.pending_last_picker = False
+        self._cancel_event = threading.Event()
 
     def add(self, text):
         with self.lock:
-            for line in text.splitlines():
+            new_lines = text.split('\n')
+            for line in new_lines:
                 self.buffer.append(line)
+                if self.wrap_cache_width is not None:
+                    wrapped = _wrap_display_line(line, self.wrap_cache_width)
+                    if not wrapped:
+                        wrapped = [""]
+                    self.wrap_cache_lines.extend(wrapped)
+                    self.wrap_cache_counts.append(len(wrapped))
                 if CLI_MODE:
                     print(line, flush=True)
+            excess = len(self.buffer) - MAX_BUFFER_LINES
+            if excess > 0:
+                self.buffer = self.buffer[excess:]
+                if self.wrap_cache_width is not None and self.wrap_cache_counts:
+                    drop_wrapped = sum(self.wrap_cache_counts[:excess])
+                    self.wrap_cache_counts = self.wrap_cache_counts[excess:]
+                    self.wrap_cache_lines = self.wrap_cache_lines[drop_wrapped:]
+                    self.scroll = max(0, self.scroll - drop_wrapped)
     
     def clear(self):
         with self.lock:
             self.buffer = []
+            self.wrap_cache_lines = []
+            self.wrap_cache_counts = []
+            self.wrap_cache_width = None
+            self.scroll = 0
 
-    def run_exec(self, program):
+    def _ensure_wrap_cache(self, width):
+        if width != self.wrap_cache_width:
+            self.wrap_cache_lines = []
+            self.wrap_cache_counts = []
+            for line in self.buffer:
+                wrapped = _wrap_display_line(line, width)
+                if not wrapped:
+                    wrapped = [""]
+                self.wrap_cache_lines.extend(wrapped)
+                self.wrap_cache_counts.append(len(wrapped))
+            self.wrap_cache_width = width
+
+    def request_cancel(self):
+        self._cancel_event.set()
+
+    def clear_cancel(self):
+        self._cancel_event.clear()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def get_wrapped_lines(self, width):
+        with self.lock:
+            self._ensure_wrap_cache(width)
+            return list(self.wrap_cache_lines)
+
+    def run_exec(self, program, sink=None, synchronous=None, stdin_text=None, soft_timeout_seconds=5.0):
         
         def _worker(cmd, cwd):
+            self.clear_cancel()
             try:
+                use_shell = False
+                stripped = cmd.lstrip()
+                if stripped.startswith("!"):
+                    use_shell = True
+                    cmd_to_run = stripped[1:].lstrip()
+                else:
+                    argv = shlex.split(cmd, posix=(os.name != 'nt'))
+                    if not argv:
+                        self.add("run: no command provided")
+                        return
+                    argv[0] = _resolve_cmd_path(argv[0])
+                    cmd_to_run = argv
+
                 proc = subprocess.Popen(
-                    cmd, shell=True,
+                    cmd_to_run,
+                    shell=use_shell,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    cwd=cwd, text=True, bufsize=1
+                    stdin=subprocess.PIPE if stdin_text is not None else None,
+                    cwd=cwd, text=True, bufsize=1,
+                    env=_sanitized_env(),
+                    encoding=locale.getpreferredencoding(False),
+                    errors="replace"
                 )
             except Exception as e:
-                self.add(f"Error launching '{cmd}': {e}")
+                (sink or self.add)(f"Error launching '{cmd}': {e}")
                 return
-            for line in proc.stdout:
-                self.add(line.rstrip('\n'))
-            for line in proc.stderr:
-                self.add(line.rstrip('\n'))
-            proc.wait()
-        if CLI_MODE:
+            emit_func = sink or self.add
+            
+            def _read_stream(stream):
+                try:
+                    for line in stream:
+                        if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                            break
+                        emit_func(line.rstrip('\n'))
+                except Exception:
+                    pass
+
+            t_out = threading.Thread(target=_read_stream, args=(proc.stdout,), daemon=True)
+            t_err = threading.Thread(target=_read_stream, args=(proc.stderr,), daemon=True)
+            t_out.start()
+            t_err.start()
+            with self.current_proc_lock:
+                self.current_proc = proc
+            if stdin_text is not None:
+                try:
+                    if proc.stdin is not None:
+                        data = stdin_text
+                        if not data.endswith('\n'):
+                            data = data + '\n'
+                        proc.stdin.write(data)
+                        proc.stdin.flush()
+                        proc.stdin.close()
+                except Exception:
+                    pass
+            notified = False
+            start_wait = time.monotonic()
+            while True:
+                if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                    try:
+                        if proc.poll() is None:
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=1.0)
+                            except Exception:
+                                pass
+                            if proc.poll() is None:
+                                proc.kill()
+                    except Exception:
+                        pass
+                    break
+                try:
+                    proc.wait(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    if not notified and soft_timeout_seconds and soft_timeout_seconds > 0:
+                        if (time.monotonic() - start_wait) >= soft_timeout_seconds:
+                            try:
+                                (sink or self.add)("[press Esc (Poly) or Ctrl+C (process) to terminate]")
+                            except Exception:
+                                pass
+                            notified = True
+                    continue
+            t_out.join()
+            t_err.join()
+            with self.current_proc_lock:
+                self.current_proc = None
+        if CLI_MODE or (synchronous is True):
             _worker(program, self.cwd)
         else:
-            threading.Thread(target=_worker, args=(program, self.cwd), daemon=True).start()
+            t = threading.Thread(target=_worker, args=(program, self.cwd), daemon=True)
+            t.start()
+            self.workers.append(t)
 
-    def cd(self, path):
+    def cd(self, path, sink=None):
+        emit = sink or self.add
         newdir = os.path.abspath(os.path.join(self.cwd, path))
         if os.path.isdir(newdir):
             self.cwd = newdir
+            _invalidate_completion_cache()
         else:
-            self.add(f"cd: no such directory: {path}")
+            emit(f"cd: no such directory: {path}")
 
-    def files(self, path):
+    def files(self, path, sink=None):
+        emit = sink or self.add
         requested_dir = os.path.abspath(os.path.join(self.cwd, path))
         if os.path.isdir(requested_dir):
             for item in os.listdir(requested_dir):
-                self.add(item)
+                emit(item)
         else:
-            self.add(f"files: no such directory: {path}")
+            emit(f"files: no such directory: {path}")
 
-    def makedir(self, path):
+    def makedir(self, path, sink=None):
+        emit = sink or self.add
         newdir = os.path.abspath(os.path.join(self.cwd, path))
         try:
             if os.path.exists(newdir) :
-                self.add(f"makedir: directory already exists: {newdir}")
+                emit(f"makedir: directory already exists: {newdir}")
                 return
             os.mkdir(newdir)
-            self.add(f"Created directory: {newdir}")
+            emit(f"Created directory: {newdir}")
+            _invalidate_completion_cache()
         except FileNotFoundError:
-            self.add(f"makedir: cannot create directory: '{path}': No such file or directory")
+            emit(f"makedir: cannot create directory: '{path}': No such file or directory")
         except PermissionError:
-            self.add(f"makedir: permission denied: '{newdir}'")
+            emit(f"makedir: permission denied: '{newdir}'")
         except OSError as e:
-            self.add(f"makedir: error creating directory: '{newdir}': {e}")
+            emit(f"makedir: error creating directory: '{newdir}': {e}")
         except Exception as e:
-            self.add(f"makedir: error creating directory: '{newdir}': {e}")
+            emit(f"makedir: error creating directory: '{newdir}': {e}")
     
-    def deldir(self, pattern):
+    def deldir(self, pattern, sink=None):
+        emit = sink or self.add
         glob_path = os.path.join(self.cwd, pattern)
         matches = glob.glob(glob_path)
         if not matches:
-            self.add(f"deldir: no matches for: {pattern}")
+            emit(f"deldir: no matches for: {pattern}")
             return
         for p in matches:
             if os.path.isdir(p):
                 try:
                     shutil.rmtree(p)
-                    self.add(f"Removed directory: {p}")
+                    emit(f"Removed directory: {p}")
+                    _invalidate_completion_cache()
                 except Exception as e:
-                    self.add(f"deldir: error removing '{p}': {e}")
+                    emit(f"deldir: error removing '{p}': {e}")
             else:
-                self.add(f"deldir: not a directory: {p}")
+                emit(f"deldir: not a directory: {p}")
 
-    def remove(self, pattern):
+    def remove(self, pattern, sink=None):
+        emit = sink or self.add
         glob_path = os.path.join(self.cwd, pattern)
         matches = glob.glob(glob_path)
         if not matches:
-            self.add(f"remove: no matches for: {pattern}")
+            emit(f"remove: no matches for: {pattern}")
             return
         for p in matches:
             if os.path.isfile(p):
                 try:
                     os.remove(p)
-                    self.add(f"Removed file: {p}")
+                    emit(f"Removed file: {p}")
+                    _invalidate_completion_cache()
                 except Exception as e:
-                    self.add(f"remove: error removing '{p}': {e}")
+                    emit(f"remove: error removing '{p}': {e}")
             else:
-                self.add(f"remove: not a file: {p}")
+                emit(f"remove: not a file: {p}")
 
-    def make(self, filename):
-            newfile = os.path.abspath(os.path.join(self.cwd, filename))
-            try:
-                if os.path.exists(newfile):
-                    self.add(f"make: file already exists: {newfile}")
-                    return
-                with open(newfile, 'w', encoding='utf-8'):
-                    pass
-                self.add(f"Created file: {newfile}")
-            except Exception as e:
-                self.add(f"make: error creating file '{filename}': {e}")
+    def make(self, filename, sink=None):
+        emit = sink or self.add
+        newfile = os.path.abspath(os.path.join(self.cwd, filename))
+        try:
+            if os.path.exists(newfile):
+                emit(f"make: file already exists: {newfile}")
+                return
+            with open(newfile, 'w', encoding='utf-8'):
+                pass
+            emit(f"Created file: {newfile}")
+            _invalidate_completion_cache()
+        except Exception as e:
+            emit(f"make: error creating file '{filename}': {e}")
 
-    def download(self, url, filename=None):
+    def download(self, url, filename=None, sink=None, synchronous=None):
         def _worker(u, fn):
             from urllib.request import urlopen
             from urllib.error import URLError, HTTPError
             import os, shutil
+            emit = sink or self.add
+            self.clear_cancel()
             parsed = urllib.parse.urlparse(u)
             if parsed.scheme not in ('http', 'https'):
-                self.add(f"download: unsupported URL scheme")
+                emit(f"download: unsupported URL scheme")
                 return
-            local_name = fn or os.path.basename(parsed.path) or 'download'
-            dest = os.path.abspath(os.path.join(self.cwd, local_name))
-            try:
-                with urlopen(u, timeout=15) as resp, open(dest, 'wb') as out:
-                    shutil.copyfileobj(resp, out)
-                self.add(f"Downloaded {u} -> {dest}")
-            except (HTTPError, URLError) as e:
-                self.add(f"download: network error: {e}")
-            except Exception as e:
-                self.add(f"download: error saving file: {e}")
-        threading.Thread(target=_worker, args=(url, filename), daemon=True).start()
+            local_name_raw = (os.path.basename(fn) if fn else os.path.basename(parsed.path)) or 'download'
+            
+            def _sanitize_download_name(name: str) -> str:
+                try:
+                    name = ''.join(ch for ch in name if unicodedata.category(ch) != 'Cc')
+                except Exception:
+                    pass
+                try:
+                    name = os.path.normpath(name)
+                except Exception:
+                    pass
+                try:
+                    name = os.path.basename(name)
+                except Exception:
+                    pass
+                for sep in (os.sep, os.altsep):
+                    if sep:
+                        name = name.replace(sep, '_')
+                name = name.strip().strip('.')
+                if not name or name in ('.', '..'):
+                    name = 'download'
+                return name
 
-    def tree(self, path=None):
+            local_name = _sanitize_download_name(local_name_raw)
+            cwd_abs = os.path.abspath(self.cwd)
+            dest = os.path.abspath(os.path.join(cwd_abs, local_name))
+            try:
+                if os.path.commonpath([cwd_abs, dest]) != cwd_abs:
+                    dest = os.path.abspath(os.path.join(cwd_abs, 'download'))
+            except Exception:
+                dest = os.path.abspath(os.path.join(cwd_abs, 'download'))
+            try:
+                MAX_BYTES = 50 * 1024 * 1024
+                TOTAL_TIMEOUT = 60
+                CHUNK = 64 * 1024
+                start_time = time.monotonic()
+                aborted_reason = None
+                was_cancelled = False
+
+                with urlopen(u, timeout=15) as resp, open(dest, 'wb') as out:
+                    try:
+                        info = getattr(resp, 'headers', None) or resp.info()
+                        cl = info.get('Content-Length') if info else None
+                        if cl is not None and cl.isdigit():
+                            if int(cl) > MAX_BYTES:
+                                aborted_reason = f"download: file too large ({int(cl)} bytes > {MAX_BYTES} limit)"
+                    except Exception:
+                        pass
+                    total = 0
+                    while not aborted_reason:
+                        if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                            was_cancelled = True
+                            break
+                        if time.monotonic() - start_time > TOTAL_TIMEOUT:
+                            aborted_reason = f"download: total timeout exceeded ({TOTAL_TIMEOUT}s)"
+                            break
+                        chunk = resp.read(CHUNK)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_BYTES:
+                            aborted_reason = f"download: file too large ({total} bytes > {MAX_BYTES} limit)"
+                            break
+                        out.write(chunk)
+                if aborted_reason:
+                    try:
+                        if os.path.exists(dest):
+                            os.remove(dest)
+                    except Exception:
+                        pass
+                    emit(aborted_reason)
+                elif was_cancelled:
+                    try:
+                        if os.path.exists(dest):
+                            os.remove(dest)
+                    except Exception:
+                        pass
+                else:
+                    emit(f"Downloaded {u} -> {dest}")
+                    _invalidate_completion_cache()
+            except (HTTPError, URLError) as e:
+                emit(f"download: network error: {e}")
+            except Exception as e:
+                emit(f"download: error saving file: {e}")
+            finally:
+                if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                    try:
+                        if os.path.exists(dest):
+                            os.remove(dest)
+                    except Exception:
+                        pass
+        if CLI_MODE or (synchronous is True):
+            _worker(url, filename)
+        else:
+            t = threading.Thread(target=_worker, args=(url, filename), daemon=True)
+            t.start()
+            self.workers.append(t)
+
+    def tree(self, path=None, sink=None, synchronous=None):
         def _worker(p):
             import os
+            emit = sink or self.add
+            self.clear_cancel()
             target = os.path.abspath(os.path.join(self.cwd, p)) if p else self.cwd
             if not os.path.exists(target):
-                self.add(f"tree: no such directory: {p}")
+                emit(f"tree: no such directory: {p}")
                 return
             if not os.path.isdir(target):
-                self.add(f"tree: not a directory: {p}")
+                emit(f"tree: not a directory: {p}")
                 return
             root_label = p or "."
-            self.add(root_label)
+            emit(root_label)
+            visited = set()
+            try:
+                st_root = os.stat(target, follow_symlinks=False)
+                visited.add((st_root.st_dev, st_root.st_ino))
+            except Exception:
+                pass
+
             def walk(dir_path, prefix=""):
+                if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                    return
                 try:
                     entries = sorted(os.listdir(dir_path), key=lambda n: n.lower())
                 except PermissionError:
-                    self.add(f"{prefix}[Permission denied]")
+                    emit(f"{prefix}[Permission denied]")
                     return
                 for idx, name in enumerate(entries):
+                    if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                        return
                     full = os.path.join(dir_path, name)
                     is_last = (idx == len(entries) - 1)
                     connector = "└── " if is_last else "├── "
-                    self.add(f"{prefix}{connector}{name}")
-                    if os.path.isdir(full):
+                    emit(f"{prefix}{connector}{name}")
+                    if os.path.isdir(full) and not os.path.islink(full):
+                        try:
+                            st = os.stat(full, follow_symlinks=False)
+                            key = (st.st_dev, st.st_ino)
+                            if key in visited:
+                                continue
+                            visited.add(key)
+                        except Exception:
+                            continue
                         extension = "    " if is_last else "│   "
                         walk(full, prefix + extension)
             walk(target)
-        threading.Thread(target=_worker, args=(path,), daemon=True).start()
+        if CLI_MODE or (synchronous is True):
+            _worker(path)
+        else:
+            t = threading.Thread(target=_worker, args=(path,), daemon=True)
+            t.start()
+            self.workers.append(t)
 
-    def color(self, thing, color_name):
+    def color(self, thing, color_name, sink=None):
+        emit = sink or self.add
         import curses
         valid_things = {
             "borders", "logotext", "clock", "userinfo",
@@ -332,7 +815,7 @@ class Tab:
         thing_lc = thing.lower()
         col_norm = color_name.lower().replace(" ", "")
         if thing_lc not in valid_things:
-            self.add(f"color: invalid target '{thing}'")
+            emit(f"color: invalid target '{thing}'")
             return
         if col_norm.startswith("dark"):
             base = col_norm[len("dark"):]
@@ -341,40 +824,83 @@ class Tab:
             base = col_norm
             bold = curses.A_BOLD
         if base not in curses_color_map:
-            self.add(f"color: invalid color '{color_name}'")
+            emit(f"color: invalid color '{color_name}'")
             return
         if not curses.has_colors():
-            self.add("color: terminal does not support colors")
+            emit("color: terminal does not support colors")
             return
         pair_id = getattr(self, "_next_color_pair", 3)
-        curses.init_pair(pair_id, curses_color_map[base], -1)
+        max_pairs = getattr(curses, 'COLOR_PAIRS', None)
+        if isinstance(max_pairs, int) and max_pairs > 0:
+            if pair_id >= max_pairs:
+                emit(f"color: maximum color pairs reached ({max_pairs - 1} usable)")
+                return
+        try:
+            curses.init_pair(pair_id, curses_color_map[base], -1)
+        except Exception as e:
+            emit(f"color: failed to set color pair {pair_id}: {e}")
+            return
         self._next_color_pair = pair_id + 1
         self.color_settings[thing_lc] = (pair_id, bold)
-        self.add(f"{thing_lc} color set to {col_norm}")
+        emit(f"{thing_lc} color set to {col_norm}")
 
-    def read(self, path):
+    def read(self, path, sink=None, stdin_text=None):
+        emit = sink or self.add
+        if (path == '-' or not path) and stdin_text is not None:
+            for line in str(stdin_text).splitlines():
+                emit(line)
+            return
+        self.clear_cancel()
         file_path = os.path.abspath(os.path.join(self.cwd, path))
         if not os.path.exists(file_path):
-            self.add(f"read: no such file: {path}")
+            emit(f"read: no such file: {path}")
             return
         if os.path.isdir(file_path):
-            self.add(f"read: '{path}' is a directory")
+            emit(f"read: '{path}' is a directory")
             return
         try:
             with open(file_path, 'rb') as f:
-                sample = f.read(4096)
-                is_text = (b'\x00' not in sample)
+                sample = f.read(8192)
                 f.seek(0)
 
+                def _likely_text(buf: bytes):
+                    if not buf:
+                        return True, 'utf-8'
+                    if b'\x00' in buf:
+                        return False, None
+                    for enc in ('utf-8', 'utf-16'):
+                        try:
+                            buf.decode(enc)
+                            return True, enc
+                        except Exception:
+                            pass
+                    printable = sum(1 for b in buf if b in (9, 10, 13) or 32 <= b <= 126)
+                    ratio = printable / max(len(buf), 1)
+                    return (ratio >= 0.85), 'latin-1'
+
+                is_text, enc = _likely_text(sample)
                 if is_text:
-                    with open(file_path, 'r', encoding='latin-1', errors='replace') as tf:
-                        for line in tf:
-                            self.add(line.rstrip('\n'))
+                    try:
+                        with open(file_path, 'r', encoding=enc or 'utf-8', errors='replace') as tf:
+                            for line in tf:
+                                if self.is_cancelled():
+                                    break
+                                emit(line.rstrip('\n'))
+                    except Exception:
+                        with open(file_path, 'r', encoding='latin-1', errors='replace') as tf:
+                            for line in tf:
+                                if self.is_cancelled():
+                                    break
+                                emit(line.rstrip('\n'))
                 else:
                     offset = 0
                     while True:
+                        if self.is_cancelled():
+                            break
                         chunk = f.read(16)
                         if not chunk:
+                            break
+                        if self.is_cancelled():
                             break
                         hex_bytes = [f"{b:02x}" for b in chunk]
                         first8 = hex_bytes[:8]
@@ -387,74 +913,112 @@ class Tab:
                             chr(b) if 32 <= b <= 126 else '.'
                             for b in chunk
                         )
-                        self.add(f"{offset:08x}  {hex_col}  {ascii_col}")
+                        emit(f"{offset:08x}  {hex_col}  {ascii_col}")
                         offset += len(chunk)
         except PermissionError:
-            self.add(f"read: permission denied: '{path}'")
+            emit(f"read: permission denied: '{path}'")
         except Exception as e:
-            self.add(f"read: error reading '{path}': {e}")
+            emit(f"read: error reading '{path}': {e}")
 
-    def move(self, source, destination):
+    def move(self, source, destination, sink=None):
+        emit = sink or self.add
         src = os.path.abspath(os.path.join(self.cwd, source))
         dst = os.path.abspath(os.path.join(self.cwd, destination))
         try:
             shutil.move(src, dst)
-            self.add(f"Moved '{src}' -> '{dst}'")
+            emit(f"Moved '{src}' -> '{dst}'")
+            _invalidate_completion_cache()
         except FileNotFoundError:
-            self.add(f"move: file not found: '{source}'")
+            emit(f"move: file not found: '{source}'")
         except PermissionError:
-            self.add(f"move: permission denied: '{source}' or '{destination}'")
+            emit(f"move: permission denied: '{source}' or '{destination}'")
         except Exception as e:
-            self.add(f"move: error moving '{source}' to '{destination}': {e}")
+            emit(f"move: error moving '{source}' to '{destination}': {e}")
 
-    def copy(self, source, destination):
+    def copy(self, source, destination, sink=None):
+        emit = sink or self.add
         src = os.path.abspath(os.path.join(self.cwd, source))
         dst = os.path.abspath(os.path.join(self.cwd, destination))
         try:
             if os.path.isdir(src):
-                self.add(f"copy: cannot copy directory: '{source}'")
+                emit(f"copy: cannot copy directory: '{source}'")
                 return
             shutil.copy2(src, dst)
-            self.add(f"Copied '{src}' -> '{dst}'")
+            emit(f"Copied '{src}' -> '{dst}'")
+            _invalidate_completion_cache()
         except FileNotFoundError:
-            self.add(f"copy: file not found: '{source}'")
+            emit(f"copy: file not found: '{source}'")
         except PermissionError:
-            self.add(f"copy: permission denied: '{source}' or '{destination}'")
+            emit(f"copy: permission denied: '{source}' or '{destination}'")
         except Exception as e:
-            self.add(f"copy: error copying '{source}' to '{destination}': {e}")
+            emit(f"copy: error copying '{source}' to '{destination}': {e}")
 
-    def kill(self, process_name):
+    def kill(self, process_name, sink=None):
+        emit = sink or self.add
         try:
             if os.name == "nt":
                 result = subprocess.run(
-                    ["taskkill", "/F", "/IM", process_name],
+                    [_resolve_cmd_path("taskkill"), "/F", "/T", "/IM", process_name],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    env=_sanitized_env()
                 )
-                no_output_text = f"No output from kill for '{process_name}'"
+                if result.returncode == 0:
+                    emit(f"Terminated '{process_name}'")
+                else:
+                    emit("no matching process")
             else:
-                result = subprocess.run(
-                    ["pkill", "-9", process_name],
+                term = subprocess.run(
+                    [_resolve_cmd_path("pkill"), "-TERM", "-x", process_name],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    env=_sanitized_env()
                 )
-                no_output_text = ""
-            output = (result.stdout or "") + (result.stderr or "")
-            self.add(output.strip() or no_output_text)
+                if term.returncode == 0:
+                    try:
+                        time.sleep(0.3)
+                    except Exception:
+                        pass
+                    try:
+                        pgrep_path = _resolve_cmd_path("pgrep")
+                        still_running = subprocess.run(
+                            [pgrep_path, "-x", process_name],
+                            capture_output=True,
+                            text=True,
+                            env=_sanitized_env()
+                        )
+                        if still_running.returncode == 0:
+                            subprocess.run(
+                                [_resolve_cmd_path("pkill"), "-KILL", "-x", process_name],
+                                capture_output=True,
+                                text=True,
+                                env=_sanitized_env()
+                            )
+                    except FileNotFoundError:
+                        subprocess.run(
+                            [_resolve_cmd_path("pkill"), "-KILL", "-x", process_name],
+                            capture_output=True,
+                            text=True,
+                            env=_sanitized_env()
+                        )
+                    emit(f"Terminated '{process_name}'")
+                else:
+                    emit("no matching process")
         except FileNotFoundError:
-            self.add("kill: system command not found on system")
+            emit("kill: system command not found on system")
         except Exception as e:
-            self.add(f"kill: error terminating '{process_name}': {e}")
+            emit(f"kill: error terminating '{process_name}': {e}")
 
-    def show_cwd(self):
-        self.add(self.cwd)
+    def show_cwd(self, sink=None):
+        (sink or self.add)(self.cwd)
 
-    def show_history(self):
+    def show_history(self, sink=None):
+        emit = sink or self.add
         if not self.history:
-            self.add("No history available.")
+            emit("No history available.")
             return
         for i, entry in enumerate(self.history):
-            self.add(f"{i + 1}: {entry}")
+            emit(f"{i + 1}: {entry}")
 
     def show_last_commands(self, stdscr):
         if not self.history:
@@ -464,19 +1028,14 @@ class Tab:
         def create_window():
             nonlocal history_window, window_height, window_width, start_y, start_x, max_display
             height, width = stdscr.getmaxyx()
-            
             window_height = min(len(self.history) + 4, height - 4)
             window_width = min(width - 10, 80)
-            
             window_height = max(window_height, 6)
             window_width = max(window_width, 30)
-            
             start_y = max(0, (height - window_height) // 2)
             start_x = max(0, (width - window_width) // 2)
-            
             history_window = curses.newwin(window_height, window_width, start_y, start_x)
             history_window.keypad(True)
-            
             max_display = window_height - 4
 
         history_window = None
@@ -485,40 +1044,30 @@ class Tab:
         start_y = 0
         start_x = 0
         max_display = 0
-        
         create_window()
-        
         current_pos = 0
         start_idx = 0
-        
         while True:
             try:
                 history_window.clear()
                 history_window.border()
                 title = " Command History - Use Up/Down arrows, Enter to select, Esc to cancel "
-                if len(title) > window_width - 4:
+                if _display_width(title) > window_width - 4:
                     title = " History - Enter:Select Esc:Cancel "
-                history_window.addstr(0, max(1, (window_width - len(title)) // 2), title, curses.A_BOLD)
-                
+                left_pad = max(1, (window_width - _display_width(title)) // 2)
+                history_window.addstr(0, left_pad, title, curses.A_BOLD)
                 for i in range(max_display):
                     idx = start_idx + i
                     if idx >= len(self.history):
                         break
-                        
                     entry = self.history[-(idx+1)]
-                    display_text = f"{idx+1}: {entry}"
-                    if len(display_text) > window_width - 6:
-                        display_text = display_text[:window_width - 9] + "..."
-                    
+                    display_text = _elide_right(f"{idx+1}: {entry}", window_width - 6)
                     if i == current_pos:
                         history_window.addstr(i + 2, 2, display_text, curses.A_REVERSE)
                     else:
                         history_window.addstr(i + 2, 2, display_text)
-                
                 history_window.refresh()
-                
                 key = history_window.getch()
-                
                 if key == 27:
                     return None
                 elif key == curses.KEY_RESIZE:
@@ -547,7 +1096,6 @@ class Tab:
                         return self.history[-(idx+1)]
             except curses.error:
                 create_window()
-        
         return None
 
     def set_mode(self, mode):
@@ -563,43 +1111,147 @@ class Tab:
             except:
                 pass
             self.shell_proc = None
+            try:
+                if hasattr(self, '_pty_master_fd'):
+                    self._pty_master_fd = None
+            except Exception:
+                pass
         self.mode = 'poly' if m == 'poly' else m
         if self.mode == 'poly':
             return
         if m == 'win':
             exe = os.environ.get('COMSPEC', 'cmd.exe')
+            args = [exe]
         elif m == 'pws':
-            exe = 'powershell.exe'
-        elif m == 'lnx':
-            grab_shell = subprocess.run('tail -n 1 /etc/shells', capture_output=True, text=True, shell=True)
-            if os.path.exists(grab_shell.stdout):
-                if grab_shell.stdout in "/bin":
-                    exe = grab_shell if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+            ps = shutil.which('pwsh') or shutil.which('pwsh.exe')
+            exe = ps if ps else _resolve_cmd_path('powershell.exe')
+            if ps:
+                args = [exe, '-NoLogo', '-NoExit', '-i']
             else:
-                exe = 'bash' if sys.platform.startswith('win') else os.environ.get('SHELL', '/bin/sh')
+                args = [exe, '-NoLogo', '-NoExit', '-Command', '-']
+        elif m == 'lnx':
+            if sys.platform.startswith('win'):
+                exe = 'bash'
+            else:
+                env_shell = os.environ.get('SHELL')
+                def _is_usable_shell(path):
+                    if not path:
+                        return False
+                    base = os.path.basename(path)
+                    if any(x in base for x in ('nologin', 'false')):
+                        return False
+                    return os.path.exists(path) and os.access(path, os.X_OK)
+                if _is_usable_shell(env_shell):
+                    exe = env_shell
+                else:
+                    exe = '/bin/sh'
+                    try:
+                        with open('/etc/shells', 'r', encoding='utf-8', errors='ignore') as f:
+                            for ln in f:
+                                s = ln.strip()
+                                if not s or s.startswith('#'):
+                                    continue
+                                if _is_usable_shell(s):
+                                    exe = s
+                                    break
+                    except Exception:
+                        pass
+        exe = _resolve_cmd_path(exe)
+        if 'args' not in locals():
+            args = [exe]
         try:
-            self.shell_proc = subprocess.Popen(
-                exe, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=self.cwd, text=True, bufsize=1
-            )
+            if os.name != 'nt' and self.mode == 'lnx':
+                import pty
+                master_fd, slave_fd = pty.openpty()
+                env = _sanitized_env()
+                env.setdefault('TERM', 'xterm')
+                env.setdefault('PS1', '$ ')
+                args = [exe, '-i']
+                self.shell_proc = subprocess.Popen(
+                    args,
+                    stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                    cwd=self.cwd, text=False, bufsize=0, env=env, close_fds=True
+                )
+                try:
+                    os.close(slave_fd)
+                except Exception:
+                    pass
+                self._pty_master_fd = master_fd
+            else:
+                use_text = not (os.name == 'nt' and self.mode == 'lnx')
+                self.shell_proc = subprocess.Popen(
+                    args, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    cwd=self.cwd, text=use_text, bufsize=(1 if use_text else 0),
+                    env=_sanitized_env(),
+                    encoding=(locale.getpreferredencoding(False) if use_text else None),
+                    errors=("replace" if use_text else None)
+                )
         except Exception as e:
             self.add(f"Failed to spawn shell '{exe}': {e}")
             self.mode = 'poly'
             return
+        csi_pattern = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+        osc_pattern = re.compile(r'\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)')
 
-        ansi_escape_pattern = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        def _strip_ansi_targeted(s: str) -> str:
+            s = osc_pattern.sub('', s)
+            s = csi_pattern.sub('', s)
+            return s
 
         def _reader(pipe):
             for line in pipe:
-                clean_line = ansi_escape_pattern.sub('', line).rstrip('\n')
-                if clean_line:
+                if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                    break
+                if not isinstance(line, str):
+                    try:
+                        line = line.decode(errors='ignore')
+                    except Exception:
+                        line = str(line)
+                clean_line = _strip_ansi_targeted(line).rstrip('\n')
+                if clean_line is not None:
                     self.add(clean_line)
 
-        for p in (self.shell_proc.stdout, self.shell_proc.stderr):
-            t = threading.Thread(target=_reader, args=(p,), daemon=True)
+        if os.name != 'nt' and self.mode == 'lnx' and getattr(self, '_pty_master_fd', None) is not None:
+            def _pty_reader(fd):
+                buf = ""
+                try:
+                    while True:
+                        if GLOBAL_SHUTDOWN.is_set() or self.is_cancelled():
+                            break
+                        try:
+                            chunk = os.read(fd, 1024)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        try:
+                            text = chunk.decode(errors='ignore')
+                        except Exception:
+                            text = chunk.decode('utf-8', errors='ignore')
+                        buf += text
+                        while "\n" in buf:
+                            line, buf = buf.split("\n", 1)
+                            clean = _strip_ansi_targeted(line)
+                            if clean is not None:
+                                self.add(clean)
+                finally:
+                    if buf:
+                        clean_tail = _strip_ansi_targeted(buf)
+                        if clean_tail is not None:
+                            self.add(clean_tail)
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+            t = threading.Thread(target=_pty_reader, args=(self._pty_master_fd,), daemon=True)
             t.start()
             self.readers.append(t)
+        else:
+            for p in (self.shell_proc.stdout, self.shell_proc.stderr):
+                t = threading.Thread(target=_reader, args=(p,), daemon=True)
+                t.start()
+                self.readers.append(t)
 
         def _waiter():
             code = self.shell_proc.wait()
@@ -607,27 +1259,113 @@ class Tab:
             self.mode = 'poly'
             self.shell_proc = None
 
-        threading.Thread(target=_waiter, daemon=True).start()
+        wt = threading.Thread(target=_waiter, daemon=True)
+        wt.start()
+        self.workers.append(wt)
 
     def write_input(self, text):
-        if not self.shell_proc or self.shell_proc.stdin.closed:
+        if not self.shell_proc:
             self.add("No shell to send input to.")
+            return
+        if os.name != 'nt' and self.mode == 'lnx' and getattr(self, '_pty_master_fd', None) is not None:
+            try:
+                os.write(self._pty_master_fd, (text + "\n").encode())
+            except Exception as e:
+                self.add(f"Error writing to PTY: {e}")
+            return
+        stdin = getattr(self.shell_proc, 'stdin', None)
+        if not stdin or getattr(stdin, 'closed', True):
+            self.add("No shell stdin available.")
             return
         with self.stdin_lock:
             try:
-                self.shell_proc.stdin.write(text + "\n")
-                self.shell_proc.stdin.flush()
+                import io as _io
+                if isinstance(stdin, _io.TextIOBase):
+                    stdin.write(text + "\n")
+                    stdin.flush()
+                else:
+                    stdin.write((text + "\n").encode())
+                    try:
+                        stdin.flush()
+                    except Exception:
+                        pass
             except Exception as e:
                 self.add(f"Error writing to shell stdin: {e}")
 
     def stop(self):
-        if self.shell_proc and self.shell_proc.poll() is None:
+        try:
+            self.request_cancel()
+        except Exception:
+            pass
+        proc = self.shell_proc
+        if proc is not None:
             try:
-                self.shell_proc.terminate()
-                self.shell_proc.wait(1)
-            except:
+                if os.name != 'nt' and getattr(self, '_pty_master_fd', None) is not None:
+                    try:
+                        os.close(self._pty_master_fd)
+                    except Exception:
+                        pass
+                    try:
+                        self._pty_master_fd = None
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                    if proc.poll() is None:
+                        proc.kill()
+            except Exception:
                 pass
         self.shell_proc = None
+        try:
+            readers = list(self.readers)
+            for t in readers:
+                try:
+                    if t and t.is_alive():
+                        t.join(timeout=0.3)
+                except Exception:
+                    pass
+        finally:
+            self.readers.clear()
+        try:
+            workers = list(self.workers)
+            for t in workers:
+                try:
+                    if t and t.is_alive():
+                        t.join(timeout=0.3)
+                except Exception:
+                    pass
+        finally:
+            self.workers.clear()
+        try:
+            self.clear_cancel()
+        except Exception:
+            pass
+
+    def stop_current_process(self):
+        with self.current_proc_lock:
+            proc = self.current_proc
+        if proc is None:
+            self.add("No running process to stop.")
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.5)
+                except Exception:
+                    pass
+                if proc.poll() is None:
+                    proc.kill()
+            self.add("Stopped current process.")
+        except Exception as e:
+            self.add(f"Failed to stop process: {e}")
 
 
 
@@ -669,13 +1407,15 @@ def draw_sidebar(stdscr, tabs, current_idx):
         if row >= h:
             break
         title = tab.name
-        disp = (title[:width - 3] + "...") if len(title) > width else title
+        disp = _elide_right(title, width)
+        pad_cols = max(0, width - _display_width(disp))
+        disp = disp + (" " * pad_cols)
         if i == current_idx:
             pid, bold = tab.color_settings.get("currenttab", (0, curses.A_REVERSE))
         else:
             pid, bold = tab.color_settings.get("tab", (1, curses.A_NORMAL))
         attr = curses.color_pair(pid) | bold
-        stdscr.addstr(row, 0, disp.ljust(width), attr)
+        stdscr.addstr(row, 0, disp, attr)
 
 
 
@@ -684,7 +1424,7 @@ def wrap_lines(lines, width):
         return list(lines)
     out = []
     for line in lines:
-        wrapped = textwrap.wrap(line, width, replace_whitespace=False)
+        wrapped = _wrap_display_line(line, width)
         out.extend(wrapped if wrapped else [""])
     return out
 
@@ -694,48 +1434,79 @@ def draw_messages(stdscr, tab):
     h, w = stdscr.getmaxyx()
     max_row = h - 2
     available = max_row - 2
-    width = w - VERTICAL_COL - 1
+    width = max(w - VERTICAL_COL - 1, 0)
+    wrapped = tab.get_wrapped_lines(width)
+    length = len(wrapped)
     with tab.lock:
-        wrapped = wrap_lines(tab.buffer, width)
-        length = len(wrapped)
         offset = min(max(tab.scroll, 0), max(length - available, 0))
-        start = max(length - available - offset, 0)
-        msgs = wrapped[start:start + available]
+    start = max(length - available - offset, 0)
+    msgs = wrapped[start:start + available]
     pid, bold = tab.color_settings.get("output", (1, curses.A_NORMAL))
     attr = curses.color_pair(pid) | bold
     for i, line in enumerate(msgs):
         y = 2 + i
-        if y < max_row:
+        if y < max_row and width > 0 and VERTICAL_COL + 1 < w:
             stdscr.addnstr(y, VERTICAL_COL + 1, line, width, attr)
 
 
 
 def export_log(tab):
-    curses.endwin()
-    root = tk.Tk()
-    root.withdraw()
-    path = filedialog.asksaveasfilename(defaultextension=".txt",
-                                        filetypes=[("Text files", "*.txt")])
-    root.destroy()
-    stdscr = curses.initscr()
-    curses.cbreak()
-    curses.noecho()
-    stdscr.keypad(True)
-    curses.mousemask(curses.ALL_MOUSE_EVENTS)
-    if not path:
-        tab.add("Export cancelled.")
-        return
     try:
-        with open(path, "w", encoding="utf-8") as f, tab.lock:
-            f.write("\n".join(tab.buffer))
-        tab.add(f"Exported to {path}")
-    except Exception as e:
-        tab.add(f"Export failed: {e}")
+        try:
+            curses.def_prog_mode()
+        except Exception:
+            pass
+        curses.endwin()
+        path = None
+        try:
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                path = filedialog.asksaveasfilename(defaultextension=".txt",
+                                                    filetypes=[("Text files", "*.txt")])
+                root.destroy()
+            except Exception:
+                path = None
+            if not path:
+                try:
+                    path = os.path.abspath(os.path.join(tab.cwd, "poly-export.txt"))
+                except Exception:
+                    path = "poly-export.txt"
+        except ImportError:
+            try:
+                path = os.path.abspath(os.path.join(tab.cwd, "poly-export.txt"))
+            except Exception:
+                path = "poly-export.txt"
+        if not path:
+            tab.add("Export cancelled.")
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f, tab.lock:
+                f.write("\n".join(tab.buffer))
+            tab.add(f"Exported to {path}")
+        except Exception as e:
+            tab.add(f"Export failed: {e}")
+    finally:
+        try:
+            curses.reset_prog_mode()
+            try:
+                curses.doupdate()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 
 def get_completions(inp, tabs, idx):
+    global _completion_cache_key, _completion_cache_time, _completion_cache_results
+    now = time.monotonic()
     cwd = tabs[idx].cwd
+    key = (inp, cwd)
+    if (now - _completion_cache_time) < (COMPLETION_DEBOUNCE_MS / 1000.0) and _completion_cache_key == key:
+        return _completion_cache_results
     i = inp.rfind(' ')
     if i == -1:
         base, token = '', inp
@@ -747,17 +1518,34 @@ def get_completions(inp, tabs, idx):
         if not command.startswith("__"):
             commands.append(command)
     if not inp.strip():
+        _completion_cache_key = key
+        _completion_cache_time = now
+        _completion_cache_results = commands
         return commands
     if cmd in ('cd', 'run', 'deldir', 'remove', "read", "move", "copy"):
         sep = os.sep
         token_path = token
-        if token_path.endswith(sep):
-            dir_part = token_path
+        is_tilde = token_path.startswith('~')
+        ends_with_sep = token_path.endswith(os.sep) or token_path.endswith('/') or token_path.endswith('\\')
+        if ends_with_sep:
+            dir_part_disp = token_path
             prefix = ''
-            dir_full = os.path.abspath(os.path.join(cwd, dir_part))
+            if is_tilde:
+                dir_full = os.path.expanduser(token_path)
+            else:
+                dir_full = os.path.abspath(os.path.join(cwd, token_path))
         else:
-            dir_part, prefix = os.path.split(token_path)
-            dir_full = os.path.abspath(os.path.join(cwd, dir_part)) if dir_part else cwd
+            dir_part_disp, prefix = os.path.split(token_path)
+            if is_tilde:
+                base_dir = os.path.expanduser(dir_part_disp) if dir_part_disp else os.path.expanduser('~')
+                dir_full = base_dir
+            else:
+                dir_full = os.path.abspath(os.path.join(cwd, dir_part_disp)) if dir_part_disp else cwd
+        if len(prefix) < COMPLETION_MIN_PREFIX:
+            _completion_cache_key = key
+            _completion_cache_time = now
+            _completion_cache_results = []
+            return []
         try:
             entries = os.listdir(dir_full)
         except Exception:
@@ -765,14 +1553,22 @@ def get_completions(inp, tabs, idx):
         matches = []
         for e in entries:
             if e.startswith(prefix):
-                sug = os.path.join(dir_part, e) if dir_part else e
+                sug = os.path.join(dir_part_disp, e) if dir_part_disp else e
                 full = base + sug + (sep if os.path.isdir(os.path.join(dir_full, e)) else '')
                 matches.append(full)
-        return sorted(matches)
+        results = sorted(matches)[:COMPLETION_MAX_RESULTS]
+        _completion_cache_key = key
+        _completion_cache_time = now
+        _completion_cache_results = results
+        return results
     parts = inp.strip().split()
     token = parts[-1] if not inp.endswith(' ') else ''
     if len(parts) == 1 and not inp.endswith(' '):
-        return [o for o in commands if o.startswith(token)]
+        results = [o for o in commands if o.startswith(token)]
+        _completion_cache_key = key
+        _completion_cache_time = now
+        _completion_cache_results = results
+        return results
     if parts[0].lower() == "tab":
         if len(parts) == 1:
             opts = ["title", "mode", "create", "delete", "export"]
@@ -786,7 +1582,11 @@ def get_completions(inp, tabs, idx):
                 opts = [t.name for t in tabs]
             else:
                 return []
-        return [base + o for o in opts if o.startswith(token)]
+        results = [base + o for o in opts if o.startswith(token)]
+        _completion_cache_key = key
+        _completion_cache_time = now
+        _completion_cache_results = results
+        return results
     if parts[0].lower() == "color":
         valid_things = [
             "borders", "logotext", "clock", "userinfo",
@@ -794,8 +1594,8 @@ def get_completions(inp, tabs, idx):
         ]
         ansi_colors = [
             "black", "darkred", "darkgreen", "darkyellow",
-            "darkblue", "darkmagenta", "darkcyan", "gray",
-            "darkgray", "red", "green", "yellow",
+            "darkblue", "darkmagenta", "darkcyan",
+            "red", "green", "yellow",
             "blue", "magenta", "cyan", "white"
         ]
         if len(parts) == 1:
@@ -804,24 +1604,46 @@ def get_completions(inp, tabs, idx):
             opts = ansi_colors
         else:
             return []
-        return [base + o for o in opts if o.startswith(token)]
+        results = [base + o for o in opts if o.startswith(token)]
+        _completion_cache_key = key
+        _completion_cache_time = now
+        _completion_cache_results = results
+        return results
     if parts[0].lower() == "alias":
         opts = commands
-        return [base + o for o in opts if o.startswith(token)]
+        results = [base + o for o in opts if o.startswith(token)]
+        _completion_cache_key = key
+        _completion_cache_time = now
+        _completion_cache_results = results
+        return results
+    _completion_cache_key = key
+    _completion_cache_time = now
+    _completion_cache_results = []
     return []
 
-def handle_single_command(cmd_line, tabs, current):
-    line = expand_variables(cmd_line, tabs[current])
-    mode = tabs[current].mode
+
+
+def handle_single_command(cmd_line, tabs, current, capture=False, out_lines=None, stdin_text=None):
+    tab, current = _safe_get_tab(tabs, current)
+    if tab is None:
+        return current, False, []
+    line = expand_variables(cmd_line, tab)
+    mode = tab.mode
+    def emit(text):
+        if capture and out_lines is not None:
+            for ln in str(text).splitlines():
+                out_lines.append(ln)
+        else:
+            tab.add(text)
     if mode != 'poly':
         run = line.strip().lower()
         if run in ('cls', 'clear', 'clear-host'):
-            tabs[current].clear()
+            tab.clear()
         else:
-            tabs[current].write_input(line)
-        return current, False
+            tab.write_input(line)
+        return current, False, []
     if not line.strip():
-        return current, False
+        return current, False, []
     if ' ' in line:
         cmd, rest = line.split(' ', 1)
     else:
@@ -833,245 +1655,331 @@ def handle_single_command(cmd_line, tabs, current):
             name = parts[0]
             value = parts[1] if len(parts) > 1 else ''
             if not re.match(r'^[A-Za-z0-9_-]+$', name):
-                tabs[current].add(f"Invalid variable name: {name}")
+                emit(f"Invalid variable name: {name}")
             else:
                 variables[name] = value
-                tabs[current].add(f"Variable '{name}' set to '{value}'")
+                emit(f"Variable '{name}' set to '{value}'")
         else:
-            tabs[current].add("Usage: variable <name> <value>")
-        return current, False
+            emit("Usage: variable <name> <value>")
+        return current, False, []
     if lc in ALIASES.keys():
-        lc = ALIASES[lc]
+        lc = ALIASES[lc].lower()
     if lc in CUSTOM_COMMANDS.keys():
-        CUSTOM_COMMANDS[lc](tabs[current], CUSTOM_COMMANDS[f"__{lc}_args"], rest)
-        return current, False
+        CUSTOM_COMMANDS[lc](tab, CUSTOM_COMMANDS[f"__{lc}_args"], rest)
+        return current, False, []
     if lc in ("exit", "quit"):
-        return current, True
+        return current, True, []
     if lc == "tab":
         if not rest:
-            tabs[current].add("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
+            emit("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
         else:
             parts = rest.split(' ', 1)
             sub = parts[0].lower()
             arg = parts[1] if len(parts) > 1 else ''
             if sub == "title" and arg:
-                tabs[current].name = arg
+                t, _ = _safe_get_tab(tabs, current)
+                if t is not None:
+                    t.name = arg
             elif sub == "mode" and arg:
-                tabs[current].set_mode(arg)
+                t, _ = _safe_get_tab(tabs, current)
+                if t is not None:
+                    t.set_mode(arg)
             elif sub == "create":
                 title = arg if arg else "New Tab"
-                tabs.append(Tab(title))
-                current = len(tabs) - 1
+                with TABS_LOCK:
+                    tabs.append(Tab(title))
+                    current = len(tabs) - 1
             elif sub == "delete" and arg:
-                idxs = [i for i, t in enumerate(tabs) if t.name == arg]
-                if not idxs:
-                    tabs[current].add(f"No tabs named '{arg}'")
-                else:
+                with TABS_LOCK:
+                    idxs = [i for i, t2 in enumerate(tabs) if t2.name == arg]
+                    to_stop = [tabs[i] for i in idxs]
                     for i in reversed(idxs):
-                        tabs[i].stop()
                         del tabs[i]
-                    if not tabs:
-                        return current, True
-                    current = min(current, len(tabs) - 1)
+                    empty_after = (len(tabs) == 0)
+                    if not empty_after:
+                        current = min(current, len(tabs) - 1)
+                if not idxs:
+                    emit(f"No tabs named '{arg}'")
+                else:
+                    for t2 in to_stop:
+                        try:
+                            t2.stop()
+                        except Exception:
+                            pass
+                    if empty_after:
+                        return current, True, []
             elif sub == "export":
                 if arg:
-                    found = next((t for t in tabs if t.name == arg), None)
+                    with TABS_LOCK:
+                        found = next((t2 for t2 in tabs if t2.name == arg), None)
                     if not found:
-                        tabs[current].add(f"No tabs named '{arg}")
+                        emit(f"No tabs named '{arg}'")
                     else:
                         export_log(found)
                 else:
-                    export_log(tabs[current])
+                        t, _ = _safe_get_tab(tabs, current)
+                        if t is not None:
+                            export_log(t)
             else:
-                tabs[current].add("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
-        return current, False
-    if lc == "cd" and rest:
-        tabs[current].cd(rest)
-        return current, False
+                emit("Usage: tab title <t> | mode <m> | create [t] | delete <t> | export [t]")
+        return current, False, []
+    if lc == "cd":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            if parts:
+                tab.cd(parts[0], sink=emit)
+        else:
+            emit("Usage: cd <directory>")
+        return current, False, []
     if lc == "cwd" and not rest:
-        tabs[current].show_cwd()
-        return current, False
+        tab.show_cwd(sink=emit)
+        return current, False, []
     if lc == "run" and rest:
         script_chars = []
         if rest.strip().endswith(".poly"):
-            script_chars = read_poly_script(rest)
+            script_chars = read_poly_script(rest, base_dir=tab.cwd)
         else:
-            tabs[current].run_exec(rest)
+            tab.run_exec(rest, sink=emit, synchronous=capture or (stdin_text is not None), stdin_text=stdin_text)
         return current, False, script_chars
     if lc == "makedir" and rest:
-        tabs[current].makedir(rest)
-        return current, False
-    if lc == "deldir" and rest:
-        tabs[current].deldir(rest)
-        return current, False
+        tab.makedir(rest)
+        return current, False, []
+    if lc == "deldir":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            if parts:
+                tab.deldir(parts[0])
+        else:
+            emit("Usage: deldir <pattern>")
+        return current, False, []
     if lc == "history":
-        tabs[current].show_history()
-        return current, False
+        tab.show_history(sink=emit)
+        return current, False, []
     if lc == "last":
         selected_cmd = ""
         if not rest:
-            curses.def_prog_mode()
-            curses.endwin()
-    
-            stdscr = curses.initscr()
-            curses.start_color()
-            curses.cbreak()
-            curses.use_default_colors()
-            curses.init_pair(1, curses.COLOR_WHITE, -1)
-            if getattr(curses, 'COLORS', 0) >= 16:
-                curses.init_pair(2, 8, -1)
-            else:
-                curses.init_pair(2, curses.COLOR_WHITE, -1)
-            curses.noecho()
-            stdscr.keypad(True)
-
-            try:
-                selected_cmd = tabs[current].show_last_commands(stdscr)
-            finally:
-                curses.endwin()
-                curses.reset_prog_mode()
-                stdscr.refresh()
+            tab.pending_last_picker = True
+            return current, False, []
         else:
             try:
                 index = int(rest)
-                selected_cmd = tabs[current].history[-(index + 2)]
             except Exception:
-                tabs[current].add("Usage: last <index>\nindex must be less than the length of the history")
-                return current, False
+                emit("Usage: last <index>\nindex must be less than the length of the history")
+                return current, False, []
+            hist = tab.history
+            if index < 0 or len(hist) < index + 2:
+                emit("Usage: last <index>\nindex must be less than the length of the history")
+                return current, False, []
+            selected_cmd = hist[-(index + 2)]
     
         if selected_cmd:
-            tabs[current].add(f"> {selected_cmd}")
+            emit(f"> {selected_cmd}")
             try:
                 return handle_command(selected_cmd, tabs, current)
             except RecursionError:
-                tabs[current].add("Recursion prevented (did you run last back to back?).")
-                return current, False
+                emit("Recursion prevented (did you run last back to back?).")
+                return current, False, []
     if lc == "files":
         if rest:
-            tabs[current].files(rest)
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            arg = parts[0] if parts else ""
+            tab.files(arg, sink=emit)
         else:
-            tabs[current].files("")
-        return current, False
-    if lc == "remove" and rest:
-        tabs[current].remove(rest)
-        return current, False
+            tab.files("", sink=emit)
+        return current, False, []
+    if lc == "remove":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            if parts:
+                tab.remove(parts[0], sink=emit)
+        else:
+            emit("Usage: remove <pattern>")
+        return current, False, []
     if lc == "echo":
         if rest:
-            tabs[current].add(rest)
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            emit(" ".join(parts))
         else:
-            tabs[current].add("\n")
-        return current, False
-    if lc == "make" and rest:
-        tabs[current].make(rest)
-        return current, False
-    if lc == "download" and rest:
-        try:
-            parts = shlex.split(rest)
-            url = parts[0]
-            fname = parts[1] if len(parts) > 1 else None
-            tabs[current].download(url, fname)
-        except ValueError:
-            tabs[current].add("Usage: download <url> \"<filename>\"")
-        return current, False
+            if stdin_text is not None:
+                emit(stdin_text)
+            else:
+                emit("\n")
+        return current, False, []
+    if lc == "make":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            if parts:
+                tab.make(parts[0], sink=emit)
+        else:
+            emit("Usage: make <filename>")
+        return current, False, []
+    if lc == "download":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+                url = parts[0]
+                fname = parts[1] if len(parts) > 1 else None
+                tab.download(url, fname, sink=emit, synchronous=capture)
+            except ValueError:
+                emit("Usage: download <url> \"<filename>\"")
+        else:
+            emit("Usage: download <url> \"<filename>\"")
+        return current, False, []
     if lc == "shutdown" and not rest:
         if os.name == "nt":
-            subprocess.run(["shutdown", "/s", "/t", "0"])
+            subprocess.run([_resolve_cmd_path("shutdown"), "/s", "/t", "0"], env=_sanitized_env())
         else:
-            subprocess.run(["shutdown", "now"])
-        return current, False
+            subprocess.run([_resolve_cmd_path("shutdown"), "now"], env=_sanitized_env())
+        return current, False, []
     if lc == "restart" and not rest:
         if os.name == "nt":
-            subprocess.run(["shutdown", "/r", "/t", "0"])
+            subprocess.run([_resolve_cmd_path("shutdown"), "/r", "/t", "0"], env=_sanitized_env())
         else:
-            subprocess.run(["reboot"])
-        return current, False
+            subprocess.run([_resolve_cmd_path("reboot")], env=_sanitized_env())
+        return current, False, []
     if lc == "alias" and rest:
-        define_alias(rest.split()[0], rest.split()[1])
-        return current, False
+        parts = rest.split()
+        if len(parts) < 2:
+            emit("Usage: alias <original> <alias>")
+            return current, False, []
+        define_alias(parts[0], parts[1])
+        return current, False, []
     if lc == "tree":
         try:
             parts = shlex.split(rest)
         except ValueError:
-            tabs[current].add('Usage: tree "<dir>"')
-            return current, False
+            emit('Usage: tree "<dir>"')
+            return current, False, []
         dir_arg = parts[0] if parts else None
-        tabs[current].tree(dir_arg)
-        return current, False
+        tab.tree(dir_arg, sink=emit, synchronous=capture)
+        return current, False, []
     if lc == "color":
         try:
             parts = shlex.split(rest)
         except ValueError:
-            tabs[current].add('Usage: color <thingtocolor> <color>')
-            return current, False
+            emit('Usage: color <thingtocolor> <color>')
+            return current, False, []
         if len(parts) != 2:
-            tabs[current].add('Usage: color <thingtocolor> <color>')
-            return current, False
+            emit('Usage: color <thingtocolor> <color>')
+            return current, False, []
         target, col = parts
-        tabs[current].color(target, col)
-        return current, False
+        tab.color(target, col)
+        return current, False, []
     if lc == "clear":
-        tabs[current].clear()
-        return current, False
-    if lc == "read" and rest:
-        tabs[current].read(rest)
-        return current, False
-    if lc == "move" and rest:
-        try:
-            parts = shlex.split(rest)
-            if len(parts) != 2:
-                raise ValueError
-            tabs[current].move(parts[0], parts[1])
-        except ValueError:
-            tabs[current].add("Usage: move <source> <destination>")
-        return current, False
-    if lc == "copy" and rest:
-        try:
-            parts = shlex.split(rest)
-            if len(parts) != 2:
-                raise ValueError
-            tabs[current].copy(parts[0], parts[1])
-        except ValueError:
-            tabs[current].add("Usage: copy <source> <destination>")
-        return current, False
-    if lc == "kill" and rest:
-        try:
-            parts = shlex.split(rest)
-            if len(parts) != 1:
-                raise ValueError
-            tabs[current].kill(parts[0])
-        except ValueError:
-            tabs[current].add("Usage: kill <processname>")
-        return current, False
-    tabs[current].add(f"Unknown: {cmd}")
-    return current, False
-
-def handle_command(cmd_line, tabs, current):
-    if " | " in cmd_line and tabs[current].mode == "poly":
-        if len(cmd_line.split(" | ")) < 2:
-            tabs[current].add("Piping requires a second operand")
-            return current, False
-        
-        buffer_len_before = len(tabs[current].buffer)
-        current, should_exit, *script_chars = handle_single_command(cmd_line.split(" | ")[0], tabs, current)
-        if should_exit:
-            return current, True
-        buffer_len_after = len(tabs[current].buffer)
-        output_len = buffer_len_after - buffer_len_before
-        output = "\n".join(tabs[current].buffer[-output_len:])
-        output = output.replace("\\", "\\\\")
-        tabs[current].buffer = tabs[current].buffer[:-output_len]
-
-        try:
-            commands = cmd_line.split(" | ")
-            if len(commands) > 2:
-                return handle_command(commands[1] + " " + output + " | " + " | ".join(commands[2:]), tabs, current)
+        tab.clear()
+        return current, False, []
+    if lc == "read":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            if parts:
+                tab.read(parts[0], sink=emit, stdin_text=stdin_text)
+        else:
+            if stdin_text is not None:
+                tab.read('-', sink=emit, stdin_text=stdin_text)
             else:
-                return handle_command(commands[1] + " " + output, tabs, current)
-        except RecursionError:
-            tabs[current].add("Pipe operation too deep")
-            return current, False
+                emit("Usage: read <path>")
+        return current, False, []
+    if lc == "move":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+                if len(parts) != 2:
+                    raise ValueError
+                tab.move(parts[0], parts[1], sink=emit)
+            except ValueError:
+                emit("Usage: move <source> <destination>")
+        else:
+            emit("Usage: move <source> <destination>")
+        return current, False, []
+    if lc == "copy":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+                if len(parts) != 2:
+                    raise ValueError
+                tab.copy(parts[0], parts[1], sink=emit)
+            except ValueError:
+                emit("Usage: copy <source> <destination>")
+        else:
+            emit("Usage: copy <source> <destination>")
+        return current, False, []
+    if lc == "kill":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+                if len(parts) != 1:
+                    raise ValueError
+                tab.kill(parts[0], sink=emit)
+            except ValueError:
+                emit("Usage: kill <processname>")
+        else:
+            emit("Usage: kill <processname>")
+        return current, False, []
+    emit(f"Unknown: {cmd}")
+    return current, False, []
 
-    return handle_single_command(cmd_line, tabs, current)
+
+
+def handle_command(cmd_line, tabs, current, stdin_text=None, force_sync=False):
+    tab, current = _safe_get_tab(tabs, current)
+    if tab is None:
+        return current, False, []
+    if '|' in cmd_line and tab.mode == "poly":
+        stages = [p.strip() for p in cmd_line.split('|') if p.strip()]
+        if len(stages) < 2:
+            tab.add("Piping requires a second operand")
+            return current, False, []
+        carry = stdin_text
+        for idx, stage in enumerate(stages):
+            captured_lines = []
+            try:
+                current, should_exit, script_chars = handle_single_command(
+                    stage, tabs, current, capture=True, out_lines=captured_lines, stdin_text=carry
+                )
+            except RecursionError:
+                tab2, current = _safe_get_tab(tabs, current)
+                if tab2 is not None:
+                    tab2.add("Pipe operation too deep")
+                return current, False, []
+            if should_exit:
+                return current, True, []
+            try:
+                tab2, current = _safe_get_tab(tabs, current)
+                if tab2 is not None and tab2.is_cancelled():
+                    break
+            except Exception:
+                pass
+            carry = "\n".join(captured_lines)
+        if carry:
+            tab3, _ = _safe_get_tab(tabs, current)
+            if tab3 is not None:
+                for ln in carry.splitlines():
+                    tab3.add(ln)
+        return current, False, []
+    return handle_single_command(cmd_line, tabs, current, capture=force_sync, stdin_text=stdin_text)
+
+
 
 def run_cli(stdscr):
     curses.curs_set(1)
@@ -1097,22 +2005,66 @@ def run_cli(stdscr):
     current = 0
     inp = ""
     cursor_pos = 0
+    input_view_col_start = 0
     suggestions = []
     sugg_idx = 0
     script_chars = read_polyrc()
     script_index = 0
     reading_script = True
-
+    active_worker = None
+    active_worker_tab = None
+    exit_requested = False
+    ui_actions = queue.Queue()
     while True:
+        try:
+            while True:
+                action, payload = ui_actions.get_nowait()
+                if action == "focus_tab":
+                    idx = int(payload)
+                    with TABS_LOCK:
+                        if 0 <= idx < len(tabs):
+                            current = idx
+        except queue.Empty:
+            pass
+        cur_tab, current = _safe_get_tab(tabs, current)
+        if cur_tab is not None and cur_tab.pending_last_picker:
+            selected_cmd = cur_tab.show_last_commands(stdscr)
+            cur_tab.pending_last_picker = False
+            if selected_cmd:
+                cur_tab.add(f"> {selected_cmd}")
+                try:
+                    current, should_exit, script_chars_2 = handle_command(selected_cmd, tabs, current)
+                    if script_chars_2:
+                        script_chars = script_chars_2
+                        reading_script = True
+                        script_index = 0
+                    if should_exit:
+                        return
+                except RecursionError:
+                    cur_tab.add("Recursion prevented (did you run last back to back?).")
+            continue
+        if exit_requested:
+            return
         h, w = stdscr.getmaxyx()
         width = w - (VERTICAL_COL + 1)
         stdscr.erase()
-        draw_layout(stdscr, tabs[current])
-        draw_sidebar(stdscr, tabs, current)
-        draw_messages(stdscr, tabs[current])
-        mode = tabs[current].mode
+        with TABS_LOCK:
+            tabs_snapshot = list(tabs)
+            if tabs_snapshot:
+                cur_idx = min(current, len(tabs_snapshot) - 1)
+                cur_tab_render = tabs_snapshot[cur_idx]
+            else:
+                cur_idx = 0
+                cur_tab_render = None
+        if cur_tab_render is None:
+            time.sleep(0.05)
+            continue
+        draw_layout(stdscr, cur_tab_render)
+        draw_sidebar(stdscr, tabs_snapshot, cur_idx)
+        draw_messages(stdscr, cur_tab_render)
+        mode = cur_tab_render.mode
         if mode == 'poly':
-            new_sugs = get_completions(inp, tabs, current)
+            new_sugs = get_completions(inp, tabs_snapshot, cur_idx)
         else:
             new_sugs = []
         if new_sugs != suggestions:
@@ -1123,18 +2075,79 @@ def run_cli(stdscr):
             full = suggestions[sugg_idx]
             if full.startswith(inp):
                 ghost = full[len(inp):]
-        cwd = tabs[current].cwd
+        cwd = cur_tab_render.cwd
         main_width = width
         max_cwd = max(int(main_width * 0.3), 1)
         if len(cwd) > max_cwd:
             cwd_disp = "..." + cwd[-(max_cwd - 3):]
         else:
             cwd_disp = cwd
-        prompt_str = f"{cwd_disp} > {inp}"
-        stdscr.addstr(h - 1, VERTICAL_COL + 1, prompt_str, normal_attr)
-        if ghost:
-            stdscr.addstr(h - 1, VERTICAL_COL + 1 + len(prompt_str), ghost, ghost_attr)
-        stdscr.move(h - 1, VERTICAL_COL + 4 + len(cwd_disp) + cursor_pos)
+        prefix = f"{cwd_disp} > "
+        avail_cols = max(w - (VERTICAL_COL + 1) - 1, 0)
+        prefix_room = max(avail_cols - 1, 0)
+        prefix_vis = _elide_left(prefix, prefix_room)
+        prefix_vis_cols = _display_width(prefix_vis)
+        input_cols_total = max(avail_cols - prefix_vis_cols, 0)
+        caret_cols = _display_width(inp[:cursor_pos])
+        total_input_cols = _display_width(inp)
+        if caret_cols < input_view_col_start:
+            input_view_col_start = caret_cols
+        elif caret_cols >= input_view_col_start + max(input_cols_total, 1):
+            input_view_col_start = max(caret_cols - max(input_cols_total, 1) + 1, 0)
+        left_elided = input_view_col_start > 0
+        right_elided = (input_view_col_start + max(input_cols_total, 1)) < total_input_cols
+        content_cols = input_cols_total
+        if left_elided:
+            content_cols = max(content_cols - 3, 0)
+        if right_elided:
+            content_cols = max(content_cols - 3, 0)
+        if content_cols < 1 and right_elided:
+            right_elided = False
+            content_cols = input_cols_total - (3 if left_elided else 0)
+        if content_cols < 1 and left_elided:
+            left_elided = False
+            content_cols = input_cols_total
+        content_cols = max(content_cols, 1 if avail_cols > 0 else 0)
+        slice_start = input_view_col_start
+        if left_elided:
+            slice_start = input_view_col_start
+        visible_input, _, _, used_cols = _slice_by_display_cols(inp, slice_start, content_cols)
+        rendered = prefix_vis
+        if left_elided:
+            rendered += "..."
+        rendered += visible_input
+        if right_elided:
+            rendered += "..."
+        x0 = VERTICAL_COL + 1
+        allowed_cols = 0
+        if w > 0:
+            allowed_cols = max(0, min(avail_cols, max(0, w - x0 - 1)))
+        prompt_drawn_cols = 0
+        if allowed_cols > 0 and 0 <= x0 < w and 0 <= (h - 1) < h:
+            prompt_vis, _, _, prompt_drawn_cols = _slice_by_display_cols(rendered, 0, allowed_cols)
+            if prompt_vis:
+                try:
+                    stdscr.addnstr(h - 1, x0, prompt_vis, len(prompt_vis), normal_attr)
+                except curses.error:
+                    pass
+        can_draw_ghost = (not right_elided)
+        if can_draw_ghost and ghost and 0 <= x0 < w and 0 <= (h - 1) < h and allowed_cols > 0:
+            rem_cols = max(0, min(allowed_cols - prompt_drawn_cols, max(0, w - (x0 + prompt_drawn_cols) - 1)))
+            if rem_cols > 0 and (x0 + prompt_drawn_cols) < w:
+                ghost_vis, _, _, _ = _slice_by_display_cols(ghost, 0, rem_cols)
+                if ghost_vis:
+                    try:
+                        stdscr.addnstr(h - 1, x0 + prompt_drawn_cols, ghost_vis, len(ghost_vis), ghost_attr)
+                    except curses.error:
+                        pass
+        cursor_in_slice_cols = max(caret_cols - input_view_col_start, 0)
+        cursor_x = VERTICAL_COL + 1 + prefix_vis_cols + (3 if left_elided else 0) + cursor_in_slice_cols
+        if w > 1 and cursor_x >= w - 1:
+            cursor_x = w - 2
+        elif cursor_x >= w:
+            cursor_x = w - 1
+        if 0 <= h - 1 < h and 0 <= cursor_x < w:
+            stdscr.move(h - 1, max(cursor_x, 0))
         stdscr.refresh()
         try:
             if script_index >= len(script_chars):
@@ -1150,29 +2163,51 @@ def run_cli(stdscr):
                 _, mx, my, _, bstate = curses.getmouse()
             except Exception:
                 continue
-            tab = tabs[current]
-            max_scroll = max(len(wrap_lines(tab.buffer, width)) - (h - 4), 0)
+            tab = cur_tab_render
+            max_scroll = max(len(tab.get_wrapped_lines(width)) - (h - 4), 0)
             if bstate & curses.BUTTON4_PRESSED:
                 tab.scroll = min(tab.scroll + 1, max_scroll)
             elif bstate & curses.BUTTON5_PRESSED:
                 tab.scroll = max(tab.scroll - 1, 0)
             elif bstate & curses.BUTTON3_PRESSED:
                 try:
-                    clipboard_text = pyperclip.paste()
-                    if clipboard_text:
-                        clipboard_text = clipboard_text.replace('\r\n', ' ').replace('\n', ' ').replace('\r', ' ')
-                        inp = inp[:cursor_pos] + clipboard_text + inp[cursor_pos:]
-                        cursor_pos += len(clipboard_text)
+                    global pyperclip
+                    if pyperclip is None:
+                        try:
+                            import importlib
+                            pyperclip = importlib.import_module('pyperclip')
+                        except Exception:
+                            raise RuntimeError('clipboard unavailable')
+                    if hasattr(pyperclip, 'is_available') and not pyperclip.is_available():
+                        raise RuntimeError('clipboard unavailable')
+                    clip = pyperclip.paste()
+                    if isinstance(clip, bytes):
+                        try:
+                            clip = clip.decode()
+                        except Exception:
+                            clip = clip.decode(errors='replace')
+                    if isinstance(clip, str) and clip:
+                        sanitized = clip.replace('\r\n', ' ').replace('\n', ' ').replace('\r', ' ')
+                        new_inp = inp[:cursor_pos] + sanitized + inp[cursor_pos:]
+                        new_cursor = cursor_pos + len(sanitized)
+                        inp = new_inp
+                        cursor_pos = new_cursor
                 except Exception:
                     pass
             continue
+        if ch == "\x1b":
+            try:
+                cur_tab_render.request_cancel()
+            except Exception:
+                pass
+            continue
         if ch == curses.KEY_PPAGE:
-            tab = tabs[current]
-            max_scroll = max(len(wrap_lines(tab.buffer, width)) - (h - 4), 0)
+            tab = cur_tab_render
+            max_scroll = max(len(tab.get_wrapped_lines(width)) - (h - 4), 0)
             tab.scroll = min(tab.scroll + (h - 4), max_scroll)
             continue
         if ch == curses.KEY_NPAGE:
-            tab = tabs[current]
+            tab = cur_tab_render
             tab.scroll = max(tab.scroll - (h - 4), 0)
             continue
         if ch == curses.KEY_RESIZE:
@@ -1200,50 +2235,137 @@ def run_cli(stdscr):
             cursor_pos = len(inp)
             continue
         if ch == "\t":
-            current = (current + 1) % len(tabs)
+            with TABS_LOCK:
+                if tabs:
+                    current = (current + 1) % len(tabs)
             inp = ""
             cursor_pos = 0
             continue
         if ch == curses.KEY_BTAB:
-            current = (current - 1) % len(tabs)
+            with TABS_LOCK:
+                if tabs:
+                    current = (current - 1) % len(tabs)
             inp = ""
             cursor_pos = 0
             continue
         if ch == "\x14":
-            tabs.append(Tab())
-            current = len(tabs) - 1
+            with TABS_LOCK:
+                tabs.append(Tab())
+                current = len(tabs) - 1
             inp = ""
             cursor_pos = 0
             continue
         if ch == "\x17":
-            tabs[current].stop()
-            del tabs[current]
-            if not tabs:
-                return
-            current = min(current, len(tabs) - 1)
+            tdel, _ = _safe_get_tab(tabs, current)
+            if tdel is None:
+                continue
+            try:
+                tdel.request_cancel()
+            except Exception:
+                pass
+            try:
+                if active_worker is not None and active_worker.is_alive() and (active_worker_tab is tdel):
+                    try:
+                        active_worker.join(timeout=0.3)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                tdel.stop()
+            except Exception:
+                pass
+            with TABS_LOCK:
+                try:
+                    idx_found = next((i for i, t2 in enumerate(tabs) if t2 is tdel), -1)
+                except Exception:
+                    idx_found = -1
+                if idx_found != -1:
+                    del tabs[idx_found]
+                if not tabs:
+                    return
+                current = min(current, len(tabs) - 1)
+            try:
+                if active_worker_tab is not None and (active_worker_tab is tdel):
+                    active_worker_tab = None
+                    if active_worker is not None and not active_worker.is_alive():
+                        active_worker = None
+            except Exception:
+                pass
             inp = ""
             cursor_pos = 0
+            continue
+        if ch == "\x03":
+            cur_tab_render.stop_current_process()
             continue
         if ch in ("\n", "\r"):
             script_index += 1
             line = inp
             inp = ""
             cursor_pos = 0
-            if line.strip() and tabs[current].mode == 'poly':
-                tabs[current].history.append(line)
+            if line.strip():
+                cur_tab_render.history.append(line)
             if not reading_script:
-                tabs[current].add(f"> {line}")
-            commands = [c.strip() for c in line.split('&&') if c.strip()]
-            for cmd_line in commands:
-                current, should_exit, *script_chars_2 = handle_command(cmd_line, tabs, current)
-                if script_chars_2 and script_chars_2 != []:
-                    script_chars = script_chars_2[0]
-                    reading_script = True
-                    script_index = 0
-
-                if should_exit:
-                    return
-            continue
+                cur_tab_render.add(f"> {line}")
+            if active_worker is not None and active_worker.is_alive():
+                cur_tab_render.add("Busy: command is still running. Press Esc to cancel.")
+            else:
+                def _run_line_on_bg(line_to_run, start_tab_idx):
+                    nonlocal script_chars, script_index, reading_script, exit_requested
+                    try:
+                        try:
+                            t0, _ = _safe_get_tab(tabs, start_tab_idx)
+                            if t0 is not None:
+                                t0.clear_cancel()
+                        except Exception:
+                            pass
+                        commands_local = [c.strip() for c in line_to_run.split('&&') if c.strip()]
+                        for cmd_line in commands_local:
+                            try:
+                                t1, _ = _safe_get_tab(tabs, start_tab_idx)
+                                if t1 is not None and t1.is_cancelled():
+                                    break
+                            except Exception:
+                                pass
+                            with TABS_LOCK:
+                                still_valid = 0 <= start_tab_idx < len(tabs)
+                            if not still_valid:
+                                break
+                            new_current_idx, should_exit, script_chars_2 = handle_command(cmd_line, tabs, start_tab_idx)
+                            try:
+                                if isinstance(new_current_idx, int) and new_current_idx != start_tab_idx:
+                                    ui_actions.put(("focus_tab", new_current_idx))
+                            except Exception:
+                                pass
+                            if script_chars_2:
+                                script_chars = script_chars_2
+                                reading_script = True
+                                script_index = 0
+                            if should_exit:
+                                exit_requested = True
+                                break
+                        _invalidate_completion_cache()
+                    finally:
+                        try:
+                            t2, _ = _safe_get_tab(tabs, start_tab_idx)
+                            if t2 is not None:
+                                t2.clear_cancel()
+                        except Exception:
+                            pass
+                import threading as _threading
+                with TABS_LOCK:
+                    start_tab_idx_local = current if 0 <= current < len(tabs) else 0
+                    start_tab_ref = tabs[start_tab_idx_local] if tabs else None
+                if start_tab_ref is None:
+                    continue
+                active_worker = _threading.Thread(target=_run_line_on_bg, args=(line, start_tab_idx_local), daemon=True)
+                active_worker.start()
+                try:
+                    start_tab_ref.workers.append(active_worker)
+                except Exception:
+                    pass
+                active_worker_tab = start_tab_ref
+                continue
         if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
             if cursor_pos > 0:
                 inp = inp[:cursor_pos - 1] + inp[cursor_pos:]
@@ -1258,13 +2380,21 @@ def run_cli(stdscr):
             cursor_pos += 1
             script_index += 1
 
+
+
 def read_polyrc():
     return read_poly_script("~/.polyrc")
 
-def read_poly_script(path):
+
+
+def read_poly_script(path, base_dir=None):
     try:
+        resolved = os.path.expanduser(path)
+        if not os.path.isabs(resolved):
+            base = base_dir if base_dir is not None else os.getcwd()
+            resolved = os.path.abspath(os.path.join(base, resolved))
         chars = []
-        with open(os.path.expanduser(path), "r") as scriptfile:
+        with open(resolved, "r") as scriptfile:
             for line in scriptfile.readlines():
                 if line.startswith("#") or line == "\n" or line == "":
                     continue
@@ -1275,12 +2405,16 @@ def read_poly_script(path):
     except FileNotFoundError:
         return []
 
+
+
 def read_poly_script_nosplit(path):
     try:
         with open(os.path.expanduser(path), "r") as scriptfile:
             return scriptfile.read()
     except FileNotFoundError:
         return 1
+
+
 
 def run_commands(cmds):
     global CLI_MODE
@@ -1291,11 +2425,31 @@ def run_commands(cmds):
         if not line.strip():
             continue
         print(f"> {line}")
+        try:
+            t0, current = _safe_get_tab(tabs, current)
+            if t0 is not None:
+                t0.clear_cancel()
+        except Exception:
+            pass
         commands = [c.strip() for c in line.split('&&') if c.strip()]
         for cmd_line in commands:
-            current, should_exit = handle_command(cmd_line, tabs, current)
+            try:
+                t1, current = _safe_get_tab(tabs, current)
+                if t1 is not None and t1.is_cancelled():
+                    break
+            except Exception:
+                pass
+            current, should_exit, _ = handle_command(cmd_line, tabs, current)
             if should_exit:
                 return
+        try:
+            t2, current = _safe_get_tab(tabs, current)
+            if t2 is not None:
+                t2.clear_cancel()
+        except Exception:
+            pass
+
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1303,18 +2457,24 @@ def main():
     group.add_argument('-c', '--command', help='Run commands and exit')
     group.add_argument('scriptname', help='Run a script file', nargs='?')
     args = parser.parse_args()
-    if args.command:
-        run_commands(args.command)
-    elif args.scriptname:
-        content = read_poly_script_nosplit(args.scriptname)
-        if content == 1:
-            print(f"File not found: {args.scriptname}")
-            return
-        run_commands(content)
-    else:
+    try:
+        if args.command:
+            run_commands(args.command)
+        elif args.scriptname:
+            content = read_poly_script_nosplit(args.scriptname)
+            if content == 1:
+                print(f"File not found: {args.scriptname}")
+                return
+            run_commands(content)
+        else:
+            try:
+                curses.wrapper(run_cli)
+            except KeyboardInterrupt:
+                pass
+    finally:
         try:
-            curses.wrapper(run_cli)
-        except KeyboardInterrupt:
+            GLOBAL_SHUTDOWN.set()
+        except Exception:
             pass
 
 
