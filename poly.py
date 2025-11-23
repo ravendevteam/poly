@@ -1513,7 +1513,7 @@ def get_completions(inp, tabs, idx):
     else:
         base, token = inp[:i+1], inp[i+1:]
     cmd = inp.strip().split(' ', 1)[0].lower()
-    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable", "shutdown", "restart", "last"]
+    commands = ["tab", "run", "cd", "cwd", "files", "makedir", "deldir", "remove", "echo", "make", "download", "alias", "tree", "history", "color", "clear", "read", "move", "copy", "kill", "variable", "shutdown", "restart", "last", "env", "setenv", "unsetenv"]
     for command in CUSTOM_COMMANDS.keys():
         if not command.startswith("__"):
             commands.append(command)
@@ -1935,6 +1935,63 @@ def handle_single_command(cmd_line, tabs, current, capture=False, out_lines=None
                 emit("Usage: kill <processname>")
         else:
             emit("Usage: kill <processname>")
+        return current, False, []
+    if lc == "env":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            for var_name in parts:
+                value = os.environ.get(var_name)
+                if value is not None:
+                    emit(f"{var_name}={value}")
+                else:
+                    emit(f"{var_name} is not set")
+        else:
+            for key in sorted(os.environ.keys()):
+                emit(f"{key}={os.environ[key]}")
+        return current, False, []
+    if lc == "setenv":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = rest.split(None, 1)
+            if len(parts) >= 2:
+                var_name = parts[0]
+                var_value = parts[1]
+                if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', var_name):
+                    emit(f"Invalid environment variable name: {var_name}")
+                else:
+                    os.environ[var_name] = var_value
+                    emit(f"Set {var_name}={var_value}")
+            elif len(parts) == 1:
+                var_name = parts[0]
+                if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', var_name):
+                    emit(f"Invalid environment variable name: {var_name}")
+                else:
+                    os.environ[var_name] = ''
+                    emit(f"Set {var_name}=")
+            else:
+                emit("Usage: setenv <name> [value]")
+        else:
+            emit("Usage: setenv <name> [value]")
+        return current, False, []
+    if lc == "unsetenv":
+        if rest:
+            try:
+                parts = shlex.split(rest)
+            except ValueError:
+                parts = [rest]
+            for var_name in parts:
+                if var_name in os.environ:
+                    del os.environ[var_name]
+                    emit(f"Unset {var_name}")
+                else:
+                    emit(f"{var_name} is not set")
+        else:
+            emit("Usage: unsetenv <name> [name2 ...]")
         return current, False, []
     emit(f"Unknown: {cmd}")
     return current, False, []
