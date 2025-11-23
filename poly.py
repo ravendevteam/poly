@@ -2251,6 +2251,31 @@ def run_cli(stdscr):
                         cursor_pos = new_cursor
                 except Exception:
                     pass
+            elif bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED | curses.BUTTON1_RELEASED):
+                if my == h - 1 and mx > VERTICAL_COL:
+                    click_x = mx - (VERTICAL_COL + 1)
+                    tab_click = cur_tab_render
+                    cwd_click = tab_click.cwd
+                    if len(cwd_click) > 20:
+                        cwd_disp_click = "..." + cwd_click[-17:]
+                    else:
+                        cwd_disp_click = cwd_click
+                    prefix_click = f"{cwd_disp_click} > "
+                    prefix_cols = _display_width(prefix_click)
+                    elision_offset = 3 if input_view_col_start > 0 else 0
+                    target_col = click_x - prefix_cols - elision_offset + input_view_col_start
+                    if target_col < 0:
+                        cursor_pos = 0
+                    else:
+                        col_count = 0
+                        new_pos = 0
+                        for i, char in enumerate(inp):
+                            if col_count >= target_col:
+                                new_pos = i
+                                break
+                            col_count += _display_width(char)
+                            new_pos = i + 1
+                        cursor_pos = min(new_pos, len(inp))
             continue
         if ch == "\x1b":
             try:
